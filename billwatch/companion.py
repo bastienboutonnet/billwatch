@@ -86,6 +86,19 @@ def _client() -> PaperlessClient:
 
 
 # ---------------------------------------------------------------------------
+# Notification fan-out (each channel is a no-op unless configured)
+# ---------------------------------------------------------------------------
+
+def _notify(title: str, body: str, *, priority: str = "default",
+            tags=None, click: str | None = None) -> None:
+    from . import remind
+    remind.ntfy(title, body, priority=priority, tags=tags or [], click=click)
+    remind.pushover(title, body, priority=priority, click=click)
+    # Email has no click action, so put the link in the body.
+    remind.send_email(title, f"{body}\n{click}" if click else body)
+
+
+# ---------------------------------------------------------------------------
 # Step 1: fill the Due-date field on new invoices
 # ---------------------------------------------------------------------------
 
@@ -114,14 +127,13 @@ def fill_due_dates(client: PaperlessClient) -> None:
             subject = "New invoice — please check the due date"
             body = (f"{doc.title}\nGuessed due {inv.due.isoformat()} "
                     f"(no date found, {config.DEFAULT_TERM_DAYS}d fallback).\n"
-                    f"Open to correct the Due date.\n{click}")
-            remind.ntfy(subject, body, priority="high", tags=["mag"], click=click)
+                    f"Open to correct the Due date.")
+            _notify(subject, body, priority="high", tags=["mag"], click=click)
         else:
             subject = "New invoice scheduled"
             body = (f"{doc.title}\nDue {inv.due.isoformat()} ({inv.due_source})\n"
-                    f"Amount {inv.amount or '?'}\n{click}")
-            remind.ntfy(subject, body, priority="default", tags=["money_with_wings"], click=click)
-        remind.send_email(subject, body)
+                    f"Amount {inv.amount or '?'}")
+            _notify(subject, body, priority="default", tags=["money_with_wings"], click=click)
         log.info("Due date set: doc %s -> %s (%s)", doc.id, inv.due, inv.due_source)
 
 
@@ -145,7 +157,6 @@ def _already_reminded_today(doc: PaperlessDoc, today: date) -> bool:
 
 
 def run_reminders(client: PaperlessClient, today: date | None = None) -> None:
-    from . import remind
     today = today or date.today()
     docs = client.invoices(exclude_paid=True)
     for r in select_reminders(docs, today, config.REMIND_DAYS, config.REMIND_BUFFER_DAYS):
@@ -155,9 +166,8 @@ def run_reminders(client: PaperlessClient, today: date | None = None) -> None:
         click = client.document_url(r.doc.id)
         body = (f"Due {r.doc.due.isoformat()}\n"
                 f"Add the '{config.PAPERLESS_PAID_TAG}' tag in Paperless once paid "
-                f"to stop reminders.\n{click}")
-        remind.ntfy(title, body, priority=priority, tags=tags, click=click)
-        remind.send_email(title, body)
+                f"to stop reminders.")
+        _notify(title, body, priority=priority, tags=tags, click=click)
         client.set_last_reminded(r.doc, today)   # no-op if the field isn't configured
         _reminded_in_process[r.doc.id] = today
         log.info("Reminder sent: %s", title)

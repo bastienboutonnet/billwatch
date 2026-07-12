@@ -44,6 +44,39 @@ def ntfy(title: str, message: str, priority: str = "default",
 
 
 # ---------------------------------------------------------------------------
+# Pushover push
+# ---------------------------------------------------------------------------
+
+_PUSHOVER_PRIORITY = {"low": -1, "default": 0, "high": 1, "urgent": 1}
+
+
+def pushover(title: str, message: str, priority: str = "default",
+             click: Optional[str] = None) -> bool:
+    """Send a Pushover notification. No-op unless enabled and token+user set."""
+    if not config.PUSHOVER_ENABLED or not config.PUSHOVER_TOKEN or not config.PUSHOVER_USER:
+        return False
+    data = {
+        "token": config.PUSHOVER_TOKEN,
+        "user": config.PUSHOVER_USER,
+        "title": title,
+        "message": message,
+        "priority": _PUSHOVER_PRIORITY.get(priority, 0),
+    }
+    if config.PUSHOVER_DEVICE:
+        data["device"] = config.PUSHOVER_DEVICE
+    if click:
+        data["url"] = click
+        data["url_title"] = "Open in Paperless"
+    try:
+        r = requests.post("https://api.pushover.net/1/messages.json", data=data, timeout=15)
+        r.raise_for_status()
+        return True
+    except Exception as e:
+        log.warning("pushover send failed: %s", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # SMTP email
 # ---------------------------------------------------------------------------
 

@@ -53,6 +53,12 @@ NTFY_URL = os.environ.get("NTFY_URL", "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")  # optional bearer token for protected topics
 
+# --- Pushover push (private by design; alternative/addition to ntfy) ---
+PUSHOVER_ENABLED = os.environ.get("PUSHOVER_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN", "")  # application API token
+PUSHOVER_USER = os.environ.get("PUSHOVER_USER", "")    # your user or group key
+PUSHOVER_DEVICE = os.environ.get("PUSHOVER_DEVICE", "")  # optional: limit to one device
+
 # --- Email reminders (SMTP) ---
 EMAIL_ENABLED = os.environ.get("EMAIL_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
