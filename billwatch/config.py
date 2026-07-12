@@ -53,6 +53,24 @@ NTFY_URL = os.environ.get("NTFY_URL", "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")  # optional bearer token for protected topics
 
+# --- Paperless-ngx companion (alternative to the standalone IMAP pipeline) ---
+# When these are set, `python -m billwatch.companion` talks to Paperless instead
+# of iCloud IMAP: Paperless owns capture/OCR/classification/storage, the companion
+# only fills the Due-date field and escalates reminders. See docs/HANDOFF.md.
+PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "").rstrip("/")
+PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN", "")
+# Phone-reachable base for clickable notification links (Tailscale MagicDNS /
+# Cloudflare-tunnel hostname, NOT a LAN IP). Falls back to PAPERLESS_URL.
+PAPERLESS_PUBLIC_URL = os.environ.get("PAPERLESS_PUBLIC_URL", "").rstrip("/") or PAPERLESS_URL
+# The shared vocabulary configured once in the Paperless UI:
+PAPERLESS_INVOICE_DOC_TYPE = os.environ.get("PAPERLESS_INVOICE_DOC_TYPE", "Invoice")
+PAPERLESS_DUE_FIELD = os.environ.get("PAPERLESS_DUE_FIELD", "Due date")  # date custom field
+PAPERLESS_PAID_TAG = os.environ.get("PAPERLESS_PAID_TAG", "Paid")
+PAPERLESS_REVIEW_TAG = os.environ.get("PAPERLESS_REVIEW_TAG", "Needs review")
+# Optional date custom field for durable same-day reminder dedupe across restarts.
+# Leave blank to dedupe in-process only (fine for a once-daily run).
+PAPERLESS_LAST_REMINDED_FIELD = os.environ.get("PAPERLESS_LAST_REMINDED_FIELD", "")
+
 # --- Behaviour ---
 POLL_INTERVAL = _int("POLL_INTERVAL", 900)          # seconds between inbox polls
 DEFAULT_TERM_DAYS = _int("DEFAULT_TERM_DAYS", 30)   # fallback due date = received + this

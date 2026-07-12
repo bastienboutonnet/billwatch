@@ -11,8 +11,11 @@ Docker on a home server. Outbound-only: IMAP + CalDAV to iCloud, HTTP to ntfy.
 - Install: `pip install -r requirements.txt`
 - Config: copy `.env.example` -> `.env`, fill in iCloud app-specific password,
   ntfy topic, etc. Load with `set -a; source .env; set +a`.
-- Run: `python -m billwatch.main`
-- Parser tests: `python tests/test_extract.py` (currently 6/6 passing)
+- Run (standalone, iCloud IMAP): `python -m billwatch.main`
+- Run (Paperless companion): `python -m billwatch.companion` (needs `PAPERLESS_*`)
+- Tests: `python tests/test_extract.py` (6/6) and `python tests/test_companion.py`
+  (13/13: document_url + reminder selection). Neither needs `requests` installed
+  — the HTTP deps are imported lazily, same as `extract.py`.
 - Docker: `docker compose up -d --build` (state persists in `./data`)
 
 ## Architecture (billwatch/)
@@ -25,9 +28,21 @@ Docker on a home server. Outbound-only: IMAP + CalDAV to iCloud, HTTP to ntfy.
                  Two thresholds: candidate vs confident; borderline => "review".
 - `remind.py`  — iCloud CalDAV all-day event (with VALARM) + ntfy push.
 - `store.py`   — SQLite state (invoices + poll high-water mark).
-- `main.py`    — loop: process_inbox -> process_paid -> run_reminders.
+- `main.py`    — STANDALONE loop: process_inbox -> process_paid -> run_reminders.
 
-Flow: new mail -> classify (PDF + keywords + labelled-due-date) -> parse invoice
+Paperless companion (alternative pipeline; reuses `extract.py` + `remind.py` as-is):
+- `paperless.py` — Paperless-ngx REST client: resolve doc-type/tag/field names to
+                   ids; list invoices (optionally excluding the Paid tag); read /
+                   set the Due-date custom field (merge-preserving); add tags;
+                   `document_url()` for clickable links.
+- `companion.py`— loop: `fill_due_dates` (parse Due-date onto new invoices, flag
+                   `fallback` parses with Needs-review + create one calendar event)
+                   then `run_reminders` (`select_reminders` = pure escalation
+                   logic, clickable ntfy). Entry: `python -m billwatch.companion`.
+                   Nearly stateless: due date + paid live in Paperless; same-day
+                   dedupe uses an optional `Last reminded` field, else in-process.
+
+Standalone flow: new mail -> classify (PDF + keywords + labelled-due-date) -> parse invoice
 -> store (`pending` or `review`) -> calendar event + initial push -> daily
 escalating reminders (REMIND_DAYS before due, then every day overdue) until the
 email is moved to the paid folder (default `Betaald`).
