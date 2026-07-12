@@ -168,8 +168,10 @@ _AMOUNT_LABELS = [
     "amount due", "total due", "balance due", "grand total", "total",
 ]
 # €1.234,56  |  € 1,234.56  |  1234,56 EUR
+# Capture the whole number token (either thousands convention) ending in a 2-digit
+# cents group, so "1,250.00" isn't truncated to "1,25".
 _AMOUNT_RE = re.compile(
-    r"(?:€|eur)\s*([\d.\s]{1,12},\d{2}|[\d,\s]{1,12}\.\d{2})|([\d.]{1,12},\d{2})\s*(?:€|eur)",
+    r"(?:€|eur)\s*(\d[\d.,\s]{0,12}[.,]\d{2})|(\d[\d.,\s]{0,12}[.,]\d{2})\s*(?:€|eur)",
     re.IGNORECASE,
 )
 

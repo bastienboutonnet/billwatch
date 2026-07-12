@@ -1,0 +1,3 @@
+# Dev-only deps for tools/gen_test_invoices.py (NOT needed at runtime).
+fpdf2>=2.8      # generate the sample PDFs
+PyMuPDF>=1.24   # let --validate read them back through billwatch.extract

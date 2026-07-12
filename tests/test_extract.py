@@ -6,44 +6,50 @@ from billwatch.extract import parse_invoice, parse_due_date
 RECEIVED = date(2026, 7, 12)
 
 CASES = [
-    # (text, expected_due, expected_source)
+    # (text, expected_due, expected_source, expected_amount)
     ("Factuurnummer: 2026-0451\nFactuurdatum: 12-07-2026\n"
      "Vervaldatum: 11-08-2026\nTotaal te betalen: € 1.210,00",
-     date(2026, 8, 11), "label"),
+     date(2026, 8, 11), "label", "€1.210,00"),
 
     ("Invoice #INV-9987\nInvoice date: 12 July 2026\n"
      "Please pay by 15 August 2026\nAmount due: € 450,00",
-     date(2026, 8, 15), "label"),
+     date(2026, 8, 15), "label", "€450,00"),
 
     ("Factuur\nDatum: 01-06-2026\nBetalingstermijn 30 dagen\n"
      "Totaalbedrag € 89,95",
-     date(2026, 7, 1), "term"),
+     date(2026, 7, 1), "term", "€89,95"),
 
     ("Rekening van uw studioruimte\nTe betalen vóór 31 augustus 2026\n"
      "IBAN NL00 BANK 0123 4567 89\nTotaal: €675,50",
-     date(2026, 8, 31), "label"),
+     date(2026, 8, 31), "label", "€675,50"),
 
     ("Some invoice with no explicit due date at all.\nTotal € 100,00",
-     date(2026, 8, 11), "fallback"),  # received + 30
+     date(2026, 8, 11), "fallback", "€100,00"),  # received + 30
 
     ("Uiterste betaaldatum 2026-09-01\nTe betalen: € 2.000,00",
-     date(2026, 9, 1), "label"),
+     date(2026, 9, 1), "label", "€2.000,00"),
+
+    # US-style thousands separator must not truncate to €1,25.
+    ("Invoice date: 12 July 2026\nPlease pay by 20 August 2026\n"
+     "Amount due: € 1,250.00",
+     date(2026, 8, 20), "label", "€1,250.00"),
 ]
 
 
 def run():
     ok = 0
-    for i, (text, exp_due, exp_src) in enumerate(CASES, 1):
+    for i, (text, exp_due, exp_src, exp_amt) in enumerate(CASES, 1):
         inv = parse_invoice(text, RECEIVED, default_term_days=30)
         due_ok = inv.due == exp_due
         src_ok = inv.due_source == exp_src
-        status = "PASS" if (due_ok and src_ok) else "FAIL"
-        if due_ok and src_ok:
+        amt_ok = inv.amount == exp_amt
+        status = "PASS" if (due_ok and src_ok and amt_ok) else "FAIL"
+        if due_ok and src_ok and amt_ok:
             ok += 1
         print(f"[{status}] case {i}: due={inv.due} ({inv.due_source}) "
               f"amount={inv.amount} no={inv.invoice_no}")
-        if not (due_ok and src_ok):
-            print(f"        expected due={exp_due} source={exp_src}")
+        if not (due_ok and src_ok and amt_ok):
+            print(f"        expected due={exp_due} source={exp_src} amount={exp_amt}")
     print(f"\n{ok}/{len(CASES)} passed")
     return ok == len(CASES)
 

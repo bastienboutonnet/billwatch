@@ -8,6 +8,8 @@ data/
 __pycache__/
 *.pyc
 tests/
+tools/
+test-invoices/
 docs/
 *.md
 Dockerfile
