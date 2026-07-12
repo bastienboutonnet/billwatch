@@ -21,6 +21,7 @@ never told about them.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -83,6 +84,9 @@ def _client() -> PaperlessClient:
         paid_tag=config.PAPERLESS_PAID_TAG,
         review_tag=config.PAPERLESS_REVIEW_TAG,
         last_reminded_field=config.PAPERLESS_LAST_REMINDED_FIELD,
+        # Only require the ninja-id field to exist when the sync is on.
+        ninja_id_field=(config.PAPERLESS_NINJA_ID_FIELD
+                        if config.INVOICE_NINJA_ENABLED else ""),
         public_base=config.PAPERLESS_PUBLIC_URL,
     )
 
@@ -272,10 +276,89 @@ def run_reminders(client: PaperlessClient, today: date | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Step 3 (optional): sync invoices into Invoice Ninja as Expenses
+# ---------------------------------------------------------------------------
+
+def _amount_to_float(amount: str | None) -> float | None:
+    """'€816,75' / '€1,250.00' -> float. Decimal separator = the rightmost . or ,."""
+    if not amount:
+        return None
+    s = re.sub(r"[^\d.,]", "", amount)
+    if not s:
+        return None
+    dec = max(s.rfind("."), s.rfind(","))
+    if dec == -1:
+        try:
+            return float(s)
+        except ValueError:
+            return None
+    int_part = re.sub(r"[.,]", "", s[:dec])
+    frac = re.sub(r"[^\d]", "", s[dec + 1:])
+    try:
+        return float(f"{int_part or '0'}.{frac or '0'}")
+    except ValueError:
+        return None
+
+
+def _ninja_action(pushed: bool, needs_review: bool, paid: bool, has_due: bool) -> str | None:
+    """Pure decision for the Invoice Ninja sync.
+
+    - not yet pushed, confident (no Needs-review tag) and due date filled -> create
+      (this also covers a low-confidence invoice once the human clears the tag)
+    - already pushed and the Paid tag was added -> mark_paid
+    """
+    if not pushed:
+        return "create" if (has_due and not needs_review) else None
+    return "mark_paid" if paid else None
+
+
+def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
+    from .invoiceninja import InvoiceNinjaError
+    for doc in client.invoices():
+        action = _ninja_action(
+            pushed=bool(doc.ninja_id),
+            needs_review=client.has_tag(doc, "review_tag"),
+            paid=client.has_tag(doc, "paid_tag"),
+            has_due=doc.due is not None,
+        )
+        if action == "create":
+            amount = _amount_to_float(parse_amount(doc.content))
+            if amount is None:
+                log.info("IN: skipping doc %s — no amount parsed", doc.id)
+                continue
+            vendor = doc.correspondent or doc.title or "Unknown vendor"
+            invoice_no = parse_invoice_no(doc.content) or ""
+            expense_date = (doc.created or date.today()).isoformat()
+            notes = (f"Imported by BillWatch\nInvoice: {invoice_no}\n"
+                     f"Due: {doc.due}\n{client.document_url(doc.id)}")
+            try:
+                vendor_id = ninja.find_or_create_vendor(vendor)
+                eid = ninja.create_expense(vendor_id=vendor_id, amount=amount,
+                                           date=expense_date, public_notes=notes)
+                client.set_ninja_id(doc, eid)
+                log.info("IN: created expense %s for doc %s (%s, %.2f)",
+                         eid, doc.id, vendor, amount)
+            except InvoiceNinjaError as e:
+                log.warning("IN: create failed for doc %s: %s", doc.id, e)
+        elif action == "mark_paid":
+            try:
+                if not ninja.is_expense_paid(doc.ninja_id):
+                    ninja.mark_expense_paid(doc.ninja_id, date.today().isoformat())
+                    log.info("IN: marked expense %s paid (doc %s)", doc.ninja_id, doc.id)
+            except InvoiceNinjaError as e:
+                log.warning("IN: mark-paid failed for doc %s: %s", doc.id, e)
+
+
+def _ninja_client():
+    from .invoiceninja import InvoiceNinjaClient
+    return InvoiceNinjaClient(config.INVOICE_NINJA_URL, config.INVOICE_NINJA_TOKEN)
+
+
+# ---------------------------------------------------------------------------
 # Loop
 # ---------------------------------------------------------------------------
 
-def cycle(client: PaperlessClient) -> None:
+def cycle(client: PaperlessClient, ninja=None) -> None:
     try:
         fill_due_dates(client)
     except Exception as e:
@@ -284,15 +367,23 @@ def cycle(client: PaperlessClient) -> None:
         run_reminders(client)
     except Exception as e:
         log.exception("reminder error: %s", e)
+    if ninja is not None:
+        try:
+            sync_invoice_ninja(client, ninja)
+        except Exception as e:
+            log.exception("invoice ninja sync error: %s", e)
 
 
 def main() -> None:
     if not config.PAPERLESS_URL or not config.PAPERLESS_TOKEN:
         raise SystemExit("PAPERLESS_URL and PAPERLESS_TOKEN are required for the companion.")
     client = _client()
+    ninja = _ninja_client() if config.INVOICE_NINJA_ENABLED else None
+    if ninja is not None:
+        log.info("Invoice Ninja expense sync enabled.")
     log.info("BillWatch Paperless companion started. Polling every %ds.", config.POLL_INTERVAL)
     while True:
-        cycle(client)
+        cycle(client, ninja)
         time.sleep(config.POLL_INTERVAL)
 
 

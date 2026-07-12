@@ -88,6 +88,17 @@ PAPERLESS_REVIEW_TAG = os.environ.get("PAPERLESS_REVIEW_TAG", "Needs review")
 # Optional date custom field for durable same-day reminder dedupe across restarts.
 # Leave blank to dedupe in-process only (fine for a once-daily run).
 PAPERLESS_LAST_REMINDED_FIELD = os.environ.get("PAPERLESS_LAST_REMINDED_FIELD", "")
+# Text custom field storing the Invoice Ninja expense id (idempotency +
+# paid-sync target). Only needed when the Invoice Ninja sync is enabled.
+PAPERLESS_NINJA_ID_FIELD = os.environ.get("PAPERLESS_NINJA_ID_FIELD", "Invoice Ninja id")
+
+# --- Invoice Ninja expense sync (optional) ---
+# Push confident/reviewed invoices into Invoice Ninja as Expenses, and mark the
+# expense paid once the Paperless `Paid` tag is added. One-directional; Paperless
+# remains the source of truth for reminders.
+INVOICE_NINJA_ENABLED = os.environ.get("INVOICE_NINJA_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+INVOICE_NINJA_URL = os.environ.get("INVOICE_NINJA_URL", "").rstrip("/")
+INVOICE_NINJA_TOKEN = os.environ.get("INVOICE_NINJA_TOKEN", "")
 
 # --- Behaviour ---
 POLL_INTERVAL = _int("POLL_INTERVAL", 900)          # seconds between inbox polls

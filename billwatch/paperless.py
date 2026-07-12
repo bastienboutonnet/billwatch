@@ -43,6 +43,8 @@ class PaperlessDoc:
     tag_ids: list[int] = field(default_factory=list)
     due: Optional[date] = None       # value of the Due-date custom field, if set
     last_reminded: Optional[date] = None
+    correspondent: Optional[str] = None   # resolved correspondent name (the vendor)
+    ninja_id: Optional[str] = None        # Invoice Ninja expense id, if pushed
     # Raw custom-field entries ({"field": id, "value": ...}), kept so a PATCH can
     # preserve fields this companion doesn't manage.
     custom_fields: list[dict] = field(default_factory=list)
@@ -69,6 +71,7 @@ class PaperlessClient:
         paid_tag: str,
         review_tag: str,
         last_reminded_field: str = "",
+        ninja_id_field: str = "",
         public_base: str = "",
         session=None,
         timeout: int = 30,
@@ -89,8 +92,10 @@ class PaperlessClient:
             "paid_tag": paid_tag,
             "review_tag": review_tag,
             "last_reminded_field": last_reminded_field,
+            "ninja_id_field": ninja_id_field,
         }
         self._ids: dict[str, Optional[int]] = {}
+        self._correspondents: Optional[dict[int, str]] = None  # id -> name cache
 
     # --- HTTP helpers --------------------------------------------------------
     def _get(self, path: str, params: Optional[dict] = None) -> dict:
@@ -150,6 +155,10 @@ class PaperlessClient:
                 self._lookup_id("custom_fields/", self._names["last_reminded_field"])
                 if self._names["last_reminded_field"] else None
             ),
+            "ninja_id_field": (
+                self._lookup_id("custom_fields/", self._names["ninja_id_field"])
+                if self._names["ninja_id_field"] else None
+            ),
         }
         log.info("Resolved Paperless ids: %s", self._ids)
 
@@ -157,17 +166,30 @@ class PaperlessClient:
         self._resolve()
         return self._ids[key]
 
+    def _correspondent_name(self, cid: Optional[int]) -> Optional[str]:
+        if cid is None:
+            return None
+        if self._correspondents is None:
+            self._correspondents = {
+                r["id"]: r.get("name") for r in self._paginate("correspondents/", {})
+            }
+        return self._correspondents.get(cid)
+
     # --- document parsing ----------------------------------------------------
     def _to_doc(self, row: dict) -> PaperlessDoc:
         due_id = self._id("due_field")
         lr_id = self._id("last_reminded_field")
+        ninja_id_field = self._id("ninja_id_field")
         cfs = row.get("custom_fields") or []
         due = last_reminded = None
+        ninja_id = None
         for cf in cfs:
             if cf.get("field") == due_id:
                 due = _parse_date(cf.get("value"))
             elif lr_id is not None and cf.get("field") == lr_id:
                 last_reminded = _parse_date(cf.get("value"))
+            elif ninja_id_field is not None and cf.get("field") == ninja_id_field:
+                ninja_id = cf.get("value") or None
         return PaperlessDoc(
             id=row["id"],
             title=row.get("title") or f"doc {row['id']}",
@@ -176,6 +198,8 @@ class PaperlessClient:
             tag_ids=list(row.get("tags") or []),
             due=due,
             last_reminded=last_reminded,
+            correspondent=self._correspondent_name(row.get("correspondent")),
+            ninja_id=ninja_id,
             custom_fields=cfs,
         )
 
@@ -220,6 +244,15 @@ class PaperlessClient:
         doc.last_reminded = when
         doc.custom_fields = body["custom_fields"]
 
+    def set_ninja_id(self, doc: PaperlessDoc, value: str) -> None:
+        field_id = self._id("ninja_id_field")
+        if field_id is None:
+            return  # feature not configured
+        body = {"custom_fields": self._merged_custom_fields(doc, field_id, str(value))}
+        self._patch(f"documents/{doc.id}/", body)
+        doc.ninja_id = str(value)
+        doc.custom_fields = body["custom_fields"]
+
     def add_tag(self, doc: PaperlessDoc, tag_key: str) -> None:
         tag_id = self._id(tag_key)
         if tag_id is None or tag_id in doc.tag_ids:
@@ -227,6 +260,10 @@ class PaperlessClient:
         tags = doc.tag_ids + [tag_id]
         self._patch(f"documents/{doc.id}/", {"tags": tags})
         doc.tag_ids = tags
+
+    def has_tag(self, doc: PaperlessDoc, tag_key: str) -> bool:
+        tag_id = self._id(tag_key)
+        return tag_id is not None and tag_id in doc.tag_ids
 
     def document_url(self, doc_id: int) -> str:
         return document_url(self.public_base, doc_id)

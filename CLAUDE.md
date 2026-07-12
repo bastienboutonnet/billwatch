@@ -13,9 +13,9 @@ Docker on a home server. Outbound-only: IMAP + CalDAV to iCloud, HTTP to ntfy.
   ntfy topic, etc. Load with `set -a; source .env; set +a`.
 - Run (standalone, iCloud IMAP): `python -m billwatch.main`
 - Run (Paperless companion): `python -m billwatch.companion` (needs `PAPERLESS_*`)
-- Tests: `python tests/test_extract.py` (6/6) and `python tests/test_companion.py`
-  (13/13: document_url + reminder selection). Neither needs `requests` installed
-  — the HTTP deps are imported lazily, same as `extract.py`.
+- Tests: `python tests/test_extract.py` (7/7), `tests/test_companion.py` (13/13),
+  `tests/test_ninja.py` (16/16: amount parsing + sync decision). None need
+  `requests` installed — the HTTP deps are imported lazily, same as `extract.py`.
 - Docker: `docker compose up -d --build` (state persists in `./data`)
 
 ## Architecture (billwatch/)
@@ -37,11 +37,17 @@ Paperless companion (alternative pipeline; reuses `extract.py` + `remind.py` as-
 - `paperless.py` — Paperless-ngx REST client: resolve doc-type/tag/field names to
                    ids; list invoices (optionally excluding the Paid tag); read /
                    set the Due-date custom field (merge-preserving); add tags;
-                   `document_url()` for clickable links.
+                   resolve correspondent names; read/write the Invoice-Ninja-id
+                   field; `document_url()` for clickable links.
+- `invoiceninja.py` — Invoice Ninja v5 REST client (optional): find/create vendor,
+                   create Expense, mark it paid. Received invoices are payables ->
+                   Expenses, not Invoices.
 - `companion.py`— loop: `fill_due_dates` (parse Due-date onto new invoices, flag
-                   `fallback` parses with Needs-review + create one calendar event)
-                   then `run_reminders` (`select_reminders` = pure escalation
-                   logic, clickable ntfy). Entry: `python -m billwatch.companion`.
+                   `fallback` parses with Needs-review + create one calendar event),
+                   `run_reminders` (`select_reminders` = pure escalation logic;
+                   styled HTML+text email + Pushover/ntfy), and optional
+                   `sync_invoice_ninja` (`_ninja_action` = pure create/mark-paid
+                   decision). Entry: `python -m billwatch.companion`.
                    Nearly stateless: due date + paid live in Paperless; same-day
                    dedupe uses an optional `Last reminded` field, else in-process.
 
