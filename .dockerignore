@@ -1,0 +1,15 @@
+# Only billwatch/ + requirements.txt are needed in the image (see Dockerfile).
+.git
+.github
+.gitignore
+data/
+.env
+.env.example
+__pycache__/
+*.pyc
+tests/
+docs/
+*.md
+Dockerfile
+docker-compose.yml
+.DS_Store
