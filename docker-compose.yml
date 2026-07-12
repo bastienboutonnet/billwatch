@@ -1,0 +1,11 @@
+services:
+  billwatch:
+    build: .
+    # image: billwatch:latest   # or build once and pin
+    container_name: billwatch
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+    # No ports are exposed: BillWatch only makes outbound connections
+    # (IMAP + CalDAV to iCloud, HTTP to your ntfy server).

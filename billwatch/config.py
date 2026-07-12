@@ -1,0 +1,72 @@
+"""All configuration comes from environment variables (see .env.example)."""
+import os
+
+
+def _int(name, default):
+    try:
+        return int(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _int_list(name, default):
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    out = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            try:
+                out.append(int(part))
+            except ValueError:
+                pass
+    return out or default
+
+
+def _list(name, default):
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    return [x.strip().lower() for x in raw.split(",") if x.strip()]
+
+
+# --- iCloud IMAP (needs an app-specific password; your normal password won't work) ---
+IMAP_HOST = os.environ.get("IMAP_HOST", "imap.mail.me.com")
+IMAP_PORT = _int("IMAP_PORT", 993)
+IMAP_USER = os.environ.get("IMAP_USER", "")
+IMAP_PASSWORD = os.environ.get("IMAP_PASSWORD", "")
+IMAP_INBOX = os.environ.get("IMAP_INBOX", "INBOX")
+# Move a paid invoice's email into this mailbox and BillWatch stops reminding you.
+IMAP_PAID_FOLDER = os.environ.get("IMAP_PAID_FOLDER", "Betaald")
+
+# --- iCloud CalDAV (same Apple ID + app-specific password) ---
+CALENDAR_ENABLED = os.environ.get("CALENDAR_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+CALDAV_URL = os.environ.get("CALDAV_URL", "https://caldav.icloud.com")
+CALDAV_USER = os.environ.get("CALDAV_USER", IMAP_USER)
+CALDAV_PASSWORD = os.environ.get("CALDAV_PASSWORD", IMAP_PASSWORD)
+CALENDAR_NAME = os.environ.get("CALENDAR_NAME", "")  # empty = first writable calendar
+
+# --- ntfy push (self-host ntfy or use ntfy.sh) ---
+NTFY_ENABLED = os.environ.get("NTFY_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+NTFY_URL = os.environ.get("NTFY_URL", "https://ntfy.sh").rstrip("/")
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")  # optional bearer token for protected topics
+
+# --- Behaviour ---
+POLL_INTERVAL = _int("POLL_INTERVAL", 900)          # seconds between inbox polls
+DEFAULT_TERM_DAYS = _int("DEFAULT_TERM_DAYS", 30)   # fallback due date = received + this
+REMIND_DAYS = _int_list("REMIND_DAYS", [7, 3, 1, 0])  # days-before-due to ping on
+REMIND_BUFFER_DAYS = _int("REMIND_BUFFER_DAYS", 0)  # treat due date as (due - buffer)
+DB_PATH = os.environ.get("DB_PATH", "/data/billwatch.db")
+TZ = os.environ.get("TZ", "Europe/Amsterdam")
+
+# Detection thresholds (see classify.py for how scores are computed).
+CANDIDATE_MIN_SCORE = _int("CANDIDATE_MIN_SCORE", 2)  # below this = ignored
+CONFIDENT_MIN_SCORE = _int("CONFIDENT_MIN_SCORE", 4)  # at/above = auto-schedule, else 'review'
+
+BILL_KEYWORDS = _list("BILL_KEYWORDS", [
+    "invoice", "factuur", "rekening", "vervaldatum", "te betalen", "betalen",
+    "betaling", "bedrag", "totaal", "amount due", "payment", "iban", "btw",
+    "nota", "bill", "due",
+])
