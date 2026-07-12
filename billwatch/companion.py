@@ -25,8 +25,10 @@ import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from html import escape
+
 from . import config
-from .extract import parse_invoice
+from .extract import parse_invoice, parse_amount, parse_invoice_no
 from .paperless import PaperlessClient, PaperlessDoc
 # `remind` (and its `requests` dependency) is imported lazily inside the functions
 # that send notifications, matching billwatch.main, so the pure selection logic
@@ -89,13 +91,75 @@ def _client() -> PaperlessClient:
 # Notification fan-out (each channel is a no-op unless configured)
 # ---------------------------------------------------------------------------
 
-def _notify(title: str, body: str, *, priority: str = "default",
-            tags=None, click: str | None = None) -> None:
+def _notify(title: str, push_body: str, *, priority: str = "default",
+            tags=None, click: str | None = None,
+            email_text: str | None = None, email_html: str | None = None) -> None:
+    """Fan out one alert. Pushes stay short (push_body); email gets the richer
+    text/HTML when provided, else falls back to push_body."""
     from . import remind
-    remind.ntfy(title, body, priority=priority, tags=tags or [], click=click)
-    remind.pushover(title, body, priority=priority, click=click)
-    # Email has no click action, so put the link in the body.
-    remind.send_email(title, f"{body}\n{click}" if click else body)
+    remind.ntfy(title, push_body, priority=priority, tags=tags or [], click=click)
+    remind.pushover(title, push_body, priority=priority, click=click)
+    text = email_text if email_text is not None else (
+        f"{push_body}\n{click}" if click else push_body)
+    remind.send_email(title, text, html_body=email_html)
+
+
+_DUE_SOURCE_TEXT = {
+    "label": "labelled date in the document",
+    "term": "invoice date + payment term",
+    "fallback": "guessed — no due date found",
+}
+
+
+def _render_email(headline: str, accent: str, subtitle: str,
+                  rows: list[tuple[str, str]], note: str, url: str,
+                  url_label: str = "Open in Paperless") -> tuple[str, str]:
+    """Build (plaintext, html) bodies. Plaintext is the always-works fallback."""
+    shown = [(lbl, val) for lbl, val in rows if val]
+
+    text_lines = [headline]
+    if subtitle:
+        text_lines += ["", subtitle]
+    text_lines.append("")
+    text_lines += [f"{lbl}: {val}" for lbl, val in shown]
+    if note:
+        text_lines += ["", note]
+    if url:
+        text_lines += ["", url]
+    text = "\n".join(text_lines)
+
+    row_html = "".join(
+        f'<tr><td style="padding:6px 20px;color:#6b7280;font-size:13px;'
+        f'white-space:nowrap;vertical-align:top;">{escape(lbl)}</td>'
+        f'<td style="padding:6px 20px;color:#111827;font-size:14px;'
+        f'font-weight:600;text-align:right;">{escape(val)}</td></tr>'
+        for lbl, val in shown
+    )
+    sub_html = (f'<div style="color:#6b7280;font-size:14px;margin-top:4px;">'
+                f'{escape(subtitle)}</div>') if subtitle else ""
+    button = (f'<a href="{escape(url, quote=True)}" style="display:inline-block;'
+              f'background:{accent};color:#ffffff;text-decoration:none;'
+              f'padding:11px 20px;border-radius:8px;font-size:14px;'
+              f'font-weight:600;">{escape(url_label)}</a>') if url else ""
+    note_html = (f'<div style="color:#9ca3af;font-size:12px;margin-top:16px;'
+                 f'line-height:1.5;">{escape(note)}</div>') if note else ""
+    html = f"""\
+<div style="margin:0;padding:24px;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+    <div style="height:6px;background:{accent};"></div>
+    <div style="padding:20px 20px 4px 20px;">
+      <div style="font-size:18px;font-weight:700;color:#111827;">{escape(headline)}</div>
+      {sub_html}
+    </div>
+    <table style="width:100%;border-collapse:collapse;margin:12px 0 4px 0;">{row_html}</table>
+    <div style="padding:12px 20px 22px 20px;">
+      {button}
+      {note_html}
+    </div>
+  </div>
+  <div style="max-width:480px;margin:10px auto 0 auto;color:#9ca3af;font-size:11px;text-align:center;">Sent by BillWatch</div>
+</div>"""
+    return text, html
 
 
 # ---------------------------------------------------------------------------
@@ -122,18 +186,34 @@ def fill_due_dates(client: PaperlessClient) -> None:
         remind.create_calendar_event(inv.due, summary, desc)
 
         click = client.document_url(doc.id)
+        rows = [
+            ("From", doc.title),
+            ("Amount", inv.amount or ""),
+            ("Invoice no", inv.invoice_no or ""),
+            ("Invoice date", doc.created.isoformat() if doc.created else ""),
+            ("Due date", inv.due.isoformat()),
+            ("Due date via", _DUE_SOURCE_TEXT.get(inv.due_source, inv.due_source)),
+        ]
         if low_confidence:
             client.add_tag(doc, "review_tag")
             subject = "New invoice — please check the due date"
-            body = (f"{doc.title}\nGuessed due {inv.due.isoformat()} "
-                    f"(no date found, {config.DEFAULT_TERM_DAYS}d fallback).\n"
-                    f"Open to correct the Due date.")
-            _notify(subject, body, priority="high", tags=["mag"], click=click)
+            push_body = (f"{doc.title}\nGuessed due {inv.due.isoformat()} "
+                         f"(no date found, {config.DEFAULT_TERM_DAYS}d fallback).")
+            subtitle = f"No due date found — guessed +{config.DEFAULT_TERM_DAYS} days."
+            note = "Tagged 'Needs review'. Open it in Paperless to correct the Due date."
+            text, html = _render_email(subject, "#d97706", subtitle, rows, note, click)
+            _notify(subject, push_body, priority="high", tags=["mag"], click=click,
+                    email_text=text, email_html=html)
         else:
             subject = "New invoice scheduled"
-            body = (f"{doc.title}\nDue {inv.due.isoformat()} ({inv.due_source})\n"
-                    f"Amount {inv.amount or '?'}")
-            _notify(subject, body, priority="default", tags=["money_with_wings"], click=click)
+            push_body = (f"{doc.title}\nDue {inv.due.isoformat()} ({inv.due_source})\n"
+                         f"Amount {inv.amount or '?'}")
+            subtitle = "Due date read from the document."
+            note = ("You'll be reminded as the due date approaches. "
+                    "Add the 'Paid' tag in Paperless once paid.")
+            text, html = _render_email(subject, "#16a34a", subtitle, rows, note, click)
+            _notify(subject, push_body, priority="default", tags=["money_with_wings"],
+                    click=click, email_text=text, email_html=html)
         log.info("Due date set: doc %s -> %s (%s)", doc.id, inv.due, inv.due_source)
 
 
@@ -164,10 +244,28 @@ def run_reminders(client: PaperlessClient, today: date | None = None) -> None:
             continue
         title, priority, tags = _title(r.doc, r.days, r.overdue)
         click = client.document_url(r.doc.id)
-        body = (f"Due {r.doc.due.isoformat()}\n"
-                f"Add the '{config.PAPERLESS_PAID_TAG}' tag in Paperless once paid "
-                f"to stop reminders.")
-        _notify(title, body, priority=priority, tags=tags, click=click)
+        if r.overdue:
+            when, accent = f"Overdue by {abs(r.days)} day(s)", "#dc2626"
+        elif r.days == 0:
+            when, accent = "Due today", "#ea580c"
+        else:
+            when, accent = f"Due in {r.days} day(s)", "#2563eb"
+        # Amount / invoice no aren't stored in Paperless; re-read from the OCR text.
+        rows = [
+            ("From", r.doc.title),
+            ("Amount", parse_amount(r.doc.content) or ""),
+            ("Invoice no", parse_invoice_no(r.doc.content) or ""),
+            ("Due date", r.doc.due.isoformat()),
+            ("Status", when),
+        ]
+        push_body = (f"Due {r.doc.due.isoformat()}\n"
+                     f"Add the '{config.PAPERLESS_PAID_TAG}' tag in Paperless once paid "
+                     f"to stop reminders.")
+        note = (f"Add the '{config.PAPERLESS_PAID_TAG}' tag in Paperless once paid "
+                f"to stop these reminders.")
+        text, html = _render_email(title, accent, when, rows, note, click)
+        _notify(title, push_body, priority=priority, tags=tags, click=click,
+                email_text=text, email_html=html)
         client.set_last_reminded(r.doc, today)   # no-op if the field isn't configured
         _reminded_in_process[r.doc.id] = today
         log.info("Reminder sent: %s", title)

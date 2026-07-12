@@ -80,9 +80,11 @@ def pushover(title: str, message: str, priority: str = "default",
 # SMTP email
 # ---------------------------------------------------------------------------
 
-def send_email(subject: str, body: str) -> bool:
-    """Send a plaintext reminder email via SMTP. No-op (returns False) unless
-    EMAIL_ENABLED and a host/recipient are configured."""
+def send_email(subject: str, body: str, html_body: Optional[str] = None) -> bool:
+    """Send a reminder email via SMTP. No-op (returns False) unless EMAIL_ENABLED
+    and a host/recipient are configured. When html_body is given the message is
+    multipart/alternative: the plaintext `body` is the fallback, the HTML the
+    preferred view."""
     if not config.EMAIL_ENABLED or not config.SMTP_HOST or not config.EMAIL_TO:
         return False
     import smtplib
@@ -93,6 +95,8 @@ def send_email(subject: str, body: str) -> bool:
     msg["To"] = config.EMAIL_TO
     msg["Subject"] = subject
     msg.set_content(body)
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")
     try:
         if config.SMTP_SECURITY == "ssl":
             server = smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT, timeout=20)
