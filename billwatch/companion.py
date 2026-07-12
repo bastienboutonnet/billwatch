@@ -335,9 +335,16 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
                 vendor_id = ninja.find_or_create_vendor(vendor)
                 eid = ninja.create_expense(vendor_id=vendor_id, amount=amount,
                                            date=expense_date, public_notes=notes)
-                client.set_ninja_id(doc, eid)
+                client.set_ninja_id(doc, eid)   # store id first so we never dup
                 log.info("IN: created expense %s for doc %s (%s, %.2f)",
                          eid, doc.id, vendor, amount)
+                # Attach the PDF (best-effort — a failure here won't re-create).
+                try:
+                    fname = f"{invoice_no or f'doc-{doc.id}'}.pdf"
+                    ninja.attach_document(eid, fname, client.download(doc.id))
+                    log.info("IN: attached %s to expense %s", fname, eid)
+                except Exception as e:
+                    log.warning("IN: attach failed for doc %s: %s", doc.id, e)
             except InvoiceNinjaError as e:
                 log.warning("IN: create failed for doc %s: %s", doc.id, e)
         elif action == "mark_paid":

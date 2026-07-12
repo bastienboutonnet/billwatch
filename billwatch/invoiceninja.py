@@ -81,3 +81,17 @@ class InvoiceNinjaClient:
 
     def mark_expense_paid(self, expense_id: str, payment_date: str) -> None:
         self._req("PUT", f"expenses/{expense_id}", json={"payment_date": payment_date})
+
+    def attach_document(self, expense_id: str, filename: str, data: bytes) -> None:
+        """Upload a file to an expense (multipart). Invoice Ninja v5 exposes
+        POST /{entity}/{id}/upload with the file(s) under `documents[]`."""
+        import requests
+        url = f"{self.api}/expenses/{expense_id}/upload"
+        files = {"documents[]": (filename, data, "application/pdf")}
+        try:
+            # Drop the JSON Content-Type so requests sets the multipart boundary.
+            r = self.session.post(url, files=files, timeout=self.timeout,
+                                  headers={"Content-Type": None})
+            r.raise_for_status()
+        except requests.RequestException as e:
+            raise InvoiceNinjaError(f"upload to expense {expense_id} failed: {e}") from e

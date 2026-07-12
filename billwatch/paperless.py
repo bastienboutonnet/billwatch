@@ -222,6 +222,17 @@ class PaperlessClient:
         """Invoices that don't yet have the Due-date custom field populated."""
         return [d for d in self.invoices() if d.due is None]
 
+    def download(self, doc_id: int) -> bytes:
+        """Raw bytes of a document's (archived) file."""
+        import requests
+        url = f"{self.api}/documents/{doc_id}/download/"
+        try:
+            r = self.session.get(url, timeout=self.timeout)
+            r.raise_for_status()
+            return r.content
+        except requests.RequestException as e:
+            raise PaperlessError(f"download of doc {doc_id} failed: {e}") from e
+
     # --- mutations -----------------------------------------------------------
     def _merged_custom_fields(self, doc: PaperlessDoc, field_id: int, value) -> list[dict]:
         merged = [dict(cf) for cf in doc.custom_fields if cf.get("field") != field_id]
