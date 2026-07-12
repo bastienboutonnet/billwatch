@@ -111,20 +111,17 @@ def fill_due_dates(client: PaperlessClient) -> None:
         click = client.document_url(doc.id)
         if low_confidence:
             client.add_tag(doc, "review_tag")
-            remind.ntfy(
-                "New invoice — please check the due date",
-                (f"{doc.title}\nGuessed due {inv.due.isoformat()} "
-                 f"(no date found, {config.DEFAULT_TERM_DAYS}d fallback).\n"
-                 f"Open to correct the Due date."),
-                priority="high", tags=["mag"], click=click,
-            )
+            subject = "New invoice — please check the due date"
+            body = (f"{doc.title}\nGuessed due {inv.due.isoformat()} "
+                    f"(no date found, {config.DEFAULT_TERM_DAYS}d fallback).\n"
+                    f"Open to correct the Due date.\n{click}")
+            remind.ntfy(subject, body, priority="high", tags=["mag"], click=click)
         else:
-            remind.ntfy(
-                "New invoice scheduled",
-                (f"{doc.title}\nDue {inv.due.isoformat()} ({inv.due_source})\n"
-                 f"Amount {inv.amount or '?'}"),
-                priority="default", tags=["money_with_wings"], click=click,
-            )
+            subject = "New invoice scheduled"
+            body = (f"{doc.title}\nDue {inv.due.isoformat()} ({inv.due_source})\n"
+                    f"Amount {inv.amount or '?'}\n{click}")
+            remind.ntfy(subject, body, priority="default", tags=["money_with_wings"], click=click)
+        remind.send_email(subject, body)
         log.info("Due date set: doc %s -> %s (%s)", doc.id, inv.due, inv.due_source)
 
 
@@ -155,11 +152,12 @@ def run_reminders(client: PaperlessClient, today: date | None = None) -> None:
         if _already_reminded_today(r.doc, today):
             continue
         title, priority, tags = _title(r.doc, r.days, r.overdue)
+        click = client.document_url(r.doc.id)
         body = (f"Due {r.doc.due.isoformat()}\n"
                 f"Add the '{config.PAPERLESS_PAID_TAG}' tag in Paperless once paid "
-                f"to stop reminders.")
-        remind.ntfy(title, body, priority=priority, tags=tags,
-                    click=client.document_url(r.doc.id))
+                f"to stop reminders.\n{click}")
+        remind.ntfy(title, body, priority=priority, tags=tags, click=click)
+        remind.send_email(title, body)
         client.set_last_reminded(r.doc, today)   # no-op if the field isn't configured
         _reminded_in_process[r.doc.id] = today
         log.info("Reminder sent: %s", title)

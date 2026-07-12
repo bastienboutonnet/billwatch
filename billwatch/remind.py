@@ -44,6 +44,40 @@ def ntfy(title: str, message: str, priority: str = "default",
 
 
 # ---------------------------------------------------------------------------
+# SMTP email
+# ---------------------------------------------------------------------------
+
+def send_email(subject: str, body: str) -> bool:
+    """Send a plaintext reminder email via SMTP. No-op (returns False) unless
+    EMAIL_ENABLED and a host/recipient are configured."""
+    if not config.EMAIL_ENABLED or not config.SMTP_HOST or not config.EMAIL_TO:
+        return False
+    import smtplib
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg["From"] = config.EMAIL_FROM or config.SMTP_USER
+    msg["To"] = config.EMAIL_TO
+    msg["Subject"] = subject
+    msg.set_content(body)
+    try:
+        if config.SMTP_SECURITY == "ssl":
+            server = smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT, timeout=20)
+        else:
+            server = smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=20)
+        with server:
+            if config.SMTP_SECURITY == "starttls":
+                server.starttls()
+            if config.SMTP_USER:
+                server.login(config.SMTP_USER, config.SMTP_PASSWORD)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        log.warning("email send failed: %s", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # iCloud CalDAV
 # ---------------------------------------------------------------------------
 

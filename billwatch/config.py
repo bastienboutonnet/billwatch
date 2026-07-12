@@ -53,6 +53,18 @@ NTFY_URL = os.environ.get("NTFY_URL", "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")  # optional bearer token for protected topics
 
+# --- Email reminders (SMTP) ---
+EMAIL_ENABLED = os.environ.get("EMAIL_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = _int("SMTP_PORT", 587)
+# 'starttls' (587), 'ssl' (465), or 'none'.
+SMTP_SECURITY = os.environ.get("SMTP_SECURITY", "starttls").lower()
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")  # iCloud/Gmail: app-specific password
+# From defaults to SMTP_USER; To may be a comma-separated list.
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "").strip() or SMTP_USER
+EMAIL_TO = os.environ.get("EMAIL_TO", "")
+
 # --- Paperless-ngx companion (alternative to the standalone IMAP pipeline) ---
 # When these are set, `python -m billwatch.companion` talks to Paperless instead
 # of iCloud IMAP: Paperless owns capture/OCR/classification/storage, the companion

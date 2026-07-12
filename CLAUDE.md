@@ -26,7 +26,8 @@ Docker on a home server. Outbound-only: IMAP + CalDAV to iCloud, HTTP to ntfy.
                  due date / amount / invoice no. Dutch-first, then English.
 - `classify.py`— content-based bill detection & scoring (no sender allowlist).
                  Two thresholds: candidate vs confident; borderline => "review".
-- `remind.py`  — iCloud CalDAV all-day event (with VALARM) + ntfy push.
+- `remind.py`  — ntfy push + SMTP email (`send_email`) + optional iCloud CalDAV
+                 all-day event (with VALARM). Calendar is off by default now.
 - `store.py`   — SQLite state (invoices + poll high-water mark).
 - `main.py`    — STANDALONE loop: process_inbox -> process_paid -> run_reminders.
 
