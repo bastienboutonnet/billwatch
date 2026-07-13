@@ -70,13 +70,21 @@ class InvoiceNinjaClient:
             raise InvoiceNinjaError(f"{method} {url} failed: {e}") from e
 
     # --- vendors ------------------------------------------------------------
-    def find_or_create_vendor(self, name: str) -> str:
+    def find_or_create_vendor(self, name: str, currency: Optional[str] = None) -> str:
+        # IN takes an expense's currency from its vendor, so the vendor must carry
+        # the right currency or the expense silently reverts to the company base.
         name = (name or "Unknown vendor").strip()
+        cid = _CURRENCY_ID.get((currency or "").upper())
         found = self._req("GET", "vendors", params={"filter": name}).get("data", [])
         for v in found:
             if (v.get("name") or "").strip().lower() == name.lower():
+                if cid and str(v.get("currency_id") or "") != str(cid):
+                    self._req("PUT", f"vendors/{v['id']}", json={"currency_id": str(cid)})
                 return v["id"]
-        created = self._req("POST", "vendors", json={"name": name}).get("data", {})
+        body = {"name": name}
+        if cid:
+            body["currency_id"] = str(cid)
+        created = self._req("POST", "vendors", json=body).get("data", {})
         if not created.get("id"):
             raise InvoiceNinjaError(f"could not create vendor {name!r}")
         return created["id"]

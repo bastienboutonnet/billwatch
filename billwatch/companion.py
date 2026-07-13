@@ -339,7 +339,7 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
             notes = (f"Imported by BillWatch\nInvoice: {invoice_no}\n"
                      f"Due: {doc.due}\n{client.document_url(doc.id)}")
             try:
-                vendor_id = ninja.find_or_create_vendor(vendor)
+                vendor_id = ninja.find_or_create_vendor(vendor, currency=currency)
                 eid = ninja.create_expense(vendor_id=vendor_id, amount=amount,
                                            currency=currency, base_currency=base,
                                            exchange_rate=rate,
