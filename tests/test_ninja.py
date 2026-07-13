@@ -4,6 +4,17 @@ import sys, os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from billwatch.companion import _amount_to_float, _ninja_action
+from billwatch.extract import parse_money
+
+# (text, expected (currency, amount) or None)
+_MONEY = [
+    ("Amount due $33.92", ("USD", 33.92)),
+    ("Amount due $12.72 USD", ("USD", 12.72)),
+    ("Totaal te betalen € 415,03", ("EUR", 415.03)),
+    ("Total £1,200.00", ("GBP", 1200.00)),
+    ("Balance due 1.250,00 EUR", ("EUR", 1250.00)),
+    ("no currency here 100", None),
+]
 
 # (amount string, expected float or None)
 _AMOUNTS = [
@@ -43,7 +54,14 @@ def run() -> bool:
         good = got == exp
         ok += good
         print(f"[{'PASS' if good else 'FAIL'}] action {args} -> {got} (want {exp})")
-    total = len(_AMOUNTS) + len(_ACTIONS)
+    for text, exp in _MONEY:
+        got = parse_money(text)
+        good = (got is None and exp is None) or (
+            got is not None and exp is not None
+            and got[0] == exp[0] and abs(got[1] - exp[1]) < 1e-9)
+        ok += good
+        print(f"[{'PASS' if good else 'FAIL'}] money {text!r} -> {got} (want {exp})")
+    total = len(_AMOUNTS) + len(_ACTIONS) + len(_MONEY)
     print(f"\n{ok}/{total} passed")
     return ok == total
 

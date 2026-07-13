@@ -15,6 +15,9 @@ from typing import Optional
 
 log = logging.getLogger("billwatch.invoiceninja")
 
+# Invoice Ninja's built-in currency ids (stable across installs).
+_CURRENCY_ID = {"USD": 1, "GBP": 2, "EUR": 3}
+
 
 class InvoiceNinjaError(RuntimeError):
     pass
@@ -60,6 +63,7 @@ class InvoiceNinjaClient:
 
     # --- expenses -----------------------------------------------------------
     def create_expense(self, *, vendor_id: str, amount: float, date: str,
+                       currency: Optional[str] = None,
                        public_notes: str = "", private_notes: str = "") -> str:
         body = {
             "vendor_id": vendor_id,
@@ -68,6 +72,9 @@ class InvoiceNinjaClient:
             "public_notes": public_notes,
             "private_notes": private_notes,
         }
+        cid = _CURRENCY_ID.get((currency or "").upper())
+        if cid:
+            body["currency_id"] = cid
         created = self._req("POST", "expenses", json=body).get("data", {})
         if not created.get("id"):
             raise InvoiceNinjaError("expense creation returned no id")

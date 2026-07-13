@@ -45,6 +45,7 @@ class PaperlessDoc:
     last_reminded: Optional[date] = None
     correspondent: Optional[str] = None   # resolved correspondent name (the vendor)
     ninja_id: Optional[str] = None        # Invoice Ninja expense id, if pushed
+    amount_raw: Optional[str] = None      # value of the Amount custom field
     # Raw custom-field entries ({"field": id, "value": ...}), kept so a PATCH can
     # preserve fields this companion doesn't manage.
     custom_fields: list[dict] = field(default_factory=list)
@@ -72,6 +73,7 @@ class PaperlessClient:
         review_tag: str,
         last_reminded_field: str = "",
         ninja_id_field: str = "",
+        amount_field: str = "",
         public_base: str = "",
         session=None,
         timeout: int = 30,
@@ -93,6 +95,7 @@ class PaperlessClient:
             "review_tag": review_tag,
             "last_reminded_field": last_reminded_field,
             "ninja_id_field": ninja_id_field,
+            "amount_field": amount_field,
         }
         self._ids: dict[str, Optional[int]] = {}
         self._correspondents: Optional[dict[int, str]] = None  # id -> name cache
@@ -159,6 +162,10 @@ class PaperlessClient:
                 self._lookup_id("custom_fields/", self._names["ninja_id_field"])
                 if self._names["ninja_id_field"] else None
             ),
+            "amount_field": (
+                self._lookup_id("custom_fields/", self._names["amount_field"])
+                if self._names["amount_field"] else None
+            ),
         }
         log.info("Resolved Paperless ids: %s", self._ids)
 
@@ -180,9 +187,10 @@ class PaperlessClient:
         due_id = self._id("due_field")
         lr_id = self._id("last_reminded_field")
         ninja_id_field = self._id("ninja_id_field")
+        amount_id = self._id("amount_field")
         cfs = row.get("custom_fields") or []
         due = last_reminded = None
-        ninja_id = None
+        ninja_id = amount_raw = None
         for cf in cfs:
             if cf.get("field") == due_id:
                 due = _parse_date(cf.get("value"))
@@ -190,6 +198,8 @@ class PaperlessClient:
                 last_reminded = _parse_date(cf.get("value"))
             elif ninja_id_field is not None and cf.get("field") == ninja_id_field:
                 ninja_id = cf.get("value") or None
+            elif amount_id is not None and cf.get("field") == amount_id:
+                amount_raw = cf.get("value") or None
         return PaperlessDoc(
             id=row["id"],
             title=row.get("title") or f"doc {row['id']}",
@@ -200,6 +210,7 @@ class PaperlessClient:
             last_reminded=last_reminded,
             correspondent=self._correspondent_name(row.get("correspondent")),
             ninja_id=ninja_id,
+            amount_raw=amount_raw,
             custom_fields=cfs,
         )
 
@@ -262,6 +273,15 @@ class PaperlessClient:
         body = {"custom_fields": self._merged_custom_fields(doc, field_id, str(value))}
         self._patch(f"documents/{doc.id}/", body)
         doc.ninja_id = str(value)
+        doc.custom_fields = body["custom_fields"]
+
+    def set_amount(self, doc: PaperlessDoc, value: str) -> None:
+        field_id = self._id("amount_field")
+        if field_id is None:
+            return  # feature not configured
+        body = {"custom_fields": self._merged_custom_fields(doc, field_id, str(value))}
+        self._patch(f"documents/{doc.id}/", body)
+        doc.amount_raw = str(value)
         doc.custom_fields = body["custom_fields"]
 
     def add_tag(self, doc: PaperlessDoc, tag_key: str) -> None:

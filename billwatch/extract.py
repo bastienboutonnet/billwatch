@@ -212,27 +212,77 @@ _AMOUNT_LABELS = [
     "totaal te betalen", "totaalbedrag", "te betalen", "totaal incl", "totaal",
     "amount due", "total due", "balance due", "grand total", "total",
 ]
-# €1.234,56  |  € 1,234.56  |  1234,56 EUR
-# Capture the whole number token (either thousands convention) ending in a 2-digit
-# cents group, so "1,250.00" isn't truncated to "1,25".
-_AMOUNT_RE = re.compile(
-    r"(?:€|eur)\s*(\d[\d.,\s]{0,12}[.,]\d{2})|(\d[\d.,\s]{0,12}[.,]\d{2})\s*(?:€|eur)",
+
+_CURRENCY_SYMBOL = {"EUR": "€", "USD": "$", "GBP": "£"}
+_CURRENCY_CODE = {"€": "EUR", "$": "USD", "£": "GBP",
+                  "eur": "EUR", "usd": "USD", "gbp": "GBP"}
+
+# A currency symbol/code next to a number token (either thousands convention),
+# in prefix (€1.234,56 / $12.72) or suffix (1234,56 EUR) position. The number
+# ends in a 2-digit cents group so "1,250.00" isn't truncated to "1,25".
+_MONEY_RE = re.compile(
+    r"(€|\$|£|eur|usd|gbp)\s*(\d[\d.,\s]{0,12}[.,]\d{2})"
+    r"|(\d[\d.,\s]{0,12}[.,]\d{2})\s*(€|\$|£|eur|usd|gbp)",
     re.IGNORECASE,
 )
 
 
-def parse_amount(text: str) -> Optional[str]:
+def _money_match(m: "re.Match") -> tuple[str, str]:
+    if m.group(1):  # symbol/code prefix
+        return _CURRENCY_CODE[m.group(1).lower()], m.group(2).strip()
+    return _CURRENCY_CODE[m.group(4).lower()], m.group(3).strip()  # suffix
+
+
+def _find_money(text: str) -> Optional[tuple[str, str]]:
+    """Return (ISO currency, number string) for the most label-relevant amount."""
     low = text.lower()
     for label in _AMOUNT_LABELS:
         idx = low.find(label)
         if idx != -1:
-            m = _AMOUNT_RE.search(text[idx: idx + len(label) + 40])
+            m = _MONEY_RE.search(text[idx: idx + len(label) + 40])
             if m:
-                return "€" + (m.group(1) or m.group(2)).strip()
-    m = _AMOUNT_RE.search(text)  # any currency amount as a last resort
-    if m:
-        return "€" + (m.group(1) or m.group(2)).strip()
-    return None
+                return _money_match(m)
+    m = _MONEY_RE.search(text)  # any currency amount as a last resort
+    return _money_match(m) if m else None
+
+
+def _number_to_float(num: str) -> Optional[float]:
+    """'816,75' / '1,250.00' / '1.210,00' -> float. Decimal = rightmost . or ,."""
+    s = re.sub(r"[^\d.,]", "", num)
+    if not s:
+        return None
+    dec = max(s.rfind("."), s.rfind(","))
+    if dec == -1:
+        try:
+            return float(s)
+        except ValueError:
+            return None
+    ip = re.sub(r"[.,]", "", s[:dec])
+    fp = re.sub(r"[^\d]", "", s[dec + 1:])
+    try:
+        return float(f"{ip or '0'}.{fp or '0'}")
+    except ValueError:
+        return None
+
+
+def parse_amount(text: str) -> Optional[str]:
+    """Display string for the invoice amount, e.g. '€415,03' or '$12.72'."""
+    r = _find_money(text)
+    if not r:
+        return None
+    code, num = r
+    sym = _CURRENCY_SYMBOL.get(code)
+    return f"{sym}{num}" if sym else f"{code} {num}"
+
+
+def parse_money(text: str) -> Optional[tuple[str, float]]:
+    """(ISO currency, numeric amount) for the invoice total, or None."""
+    r = _find_money(text)
+    if not r:
+        return None
+    code, num = r
+    val = _number_to_float(num)
+    return (code, val) if val is not None else None
 
 
 _INV_NO_RE = re.compile(

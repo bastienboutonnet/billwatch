@@ -29,7 +29,8 @@ from datetime import date, timedelta
 from html import escape
 
 from . import config
-from .extract import parse_invoice, parse_amount, parse_invoice_no
+from .extract import (parse_invoice, parse_amount, parse_invoice_no, parse_money,
+                      _number_to_float)
 from .paperless import PaperlessClient, PaperlessDoc
 # `remind` (and its `requests` dependency) is imported lazily inside the functions
 # that send notifications, matching billwatch.main, so the pure selection logic
@@ -84,9 +85,11 @@ def _client() -> PaperlessClient:
         paid_tag=config.PAPERLESS_PAID_TAG,
         review_tag=config.PAPERLESS_REVIEW_TAG,
         last_reminded_field=config.PAPERLESS_LAST_REMINDED_FIELD,
-        # Only require the ninja-id field to exist when the sync is on.
+        # Only require these fields to exist when the IN sync is on.
         ninja_id_field=(config.PAPERLESS_NINJA_ID_FIELD
                         if config.INVOICE_NINJA_ENABLED else ""),
+        amount_field=(config.PAPERLESS_AMOUNT_FIELD
+                      if config.INVOICE_NINJA_ENABLED else ""),
         public_base=config.PAPERLESS_PUBLIC_URL,
     )
 
@@ -181,6 +184,8 @@ def fill_due_dates(client: PaperlessClient) -> None:
         received = doc.created or date.today()
         inv = parse_invoice(doc.content, received, config.DEFAULT_TERM_DAYS)
         client.set_due_date(doc, inv.due)
+        if inv.amount and not doc.amount_raw:
+            client.set_amount(doc, inv.amount)  # no-op if the field isn't configured
         low_confidence = inv.due_source == "fallback"
 
         summary = f"Pay invoice: {inv.amount or '?'}"
@@ -258,7 +263,7 @@ def run_reminders(client: PaperlessClient, today: date | None = None) -> None:
         # Amount / invoice no aren't stored in Paperless; re-read from the OCR text.
         rows = [
             ("From", r.doc.title),
-            ("Amount", parse_amount(r.doc.content) or ""),
+            ("Amount", r.doc.amount_raw or parse_amount(r.doc.content) or ""),
             ("Invoice no", parse_invoice_no(r.doc.content) or ""),
             ("Due date", r.doc.due.isoformat()),
             ("Status", when),
@@ -281,24 +286,19 @@ def run_reminders(client: PaperlessClient, today: date | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 def _amount_to_float(amount: str | None) -> float | None:
-    """'€816,75' / '€1,250.00' -> float. Decimal separator = the rightmost . or ,."""
-    if not amount:
-        return None
-    s = re.sub(r"[^\d.,]", "", amount)
-    if not s:
-        return None
-    dec = max(s.rfind("."), s.rfind(","))
-    if dec == -1:
-        try:
-            return float(s)
-        except ValueError:
-            return None
-    int_part = re.sub(r"[.,]", "", s[:dec])
-    frac = re.sub(r"[^\d]", "", s[dec + 1:])
-    try:
-        return float(f"{int_part or '0'}.{frac or '0'}")
-    except ValueError:
-        return None
+    """'€816,75' / '€1,250.00' -> float (currency-agnostic number parse)."""
+    return _number_to_float(amount) if amount else None
+
+
+def _doc_money(client: PaperlessClient, doc: PaperlessDoc):
+    """(currency, amount) for a doc — from a human-set Amount field if present,
+    else parsed from OCR and written back to the field. None if unknown."""
+    if doc.amount_raw:
+        return parse_money(doc.amount_raw)   # human override wins (any format)
+    money = parse_money(doc.content)
+    if money:
+        client.set_amount(doc, parse_amount(doc.content))  # store the display form
+    return money
 
 
 def _ninja_action(pushed: bool, needs_review: bool, paid: bool, has_due: bool) -> str | None:
@@ -323,10 +323,12 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
             has_due=doc.due is not None,
         )
         if action == "create":
-            amount = _amount_to_float(parse_amount(doc.content))
-            if amount is None:
-                log.info("IN: skipping doc %s — no amount parsed", doc.id)
+            money = _doc_money(client, doc)
+            if money is None:
+                log.info("IN: skipping doc %s — no amount (set the Amount field "
+                         "in Paperless to import it)", doc.id)
                 continue
+            currency, amount = money
             vendor = doc.correspondent or doc.title or "Unknown vendor"
             invoice_no = parse_invoice_no(doc.content) or ""
             expense_date = (doc.created or date.today()).isoformat()
@@ -335,7 +337,8 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
             try:
                 vendor_id = ninja.find_or_create_vendor(vendor)
                 eid = ninja.create_expense(vendor_id=vendor_id, amount=amount,
-                                           date=expense_date, public_notes=notes)
+                                           currency=currency, date=expense_date,
+                                           public_notes=notes)
                 client.set_ninja_id(doc, eid)   # store id first so we never dup
                 log.info("IN: created expense %s for doc %s (%s, %.2f)",
                          eid, doc.id, vendor, amount)
