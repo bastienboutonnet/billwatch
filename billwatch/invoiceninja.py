@@ -83,21 +83,27 @@ class InvoiceNinjaClient:
 
     # --- expenses -----------------------------------------------------------
     def create_expense(self, *, vendor_id: str, amount: float, date: str,
-                       currency: Optional[str] = None,
+                       currency: Optional[str] = None, base_currency: str = "EUR",
                        exchange_rate: Optional[float] = None,
                        public_notes: str = "", private_notes: str = "") -> str:
         body = {
             "vendor_id": vendor_id,
-            "amount": amount,
             "date": date,
             "public_notes": public_notes,
             "private_notes": private_notes,
         }
-        cid = _CURRENCY_ID.get((currency or "").upper())
-        if cid:
-            body["currency_id"] = str(cid)   # IN expects the id as a string
-            if exchange_rate:
-                body["exchange_rate"] = exchange_rate
+        foreign = _CURRENCY_ID.get((currency or "").upper())
+        base = _CURRENCY_ID.get(base_currency.upper())
+        if foreign and base and foreign != base and exchange_rate:
+            # IN forces currency_id to the company base, so a foreign expense is
+            # modelled as expense_currency_id + foreign_amount, with `amount` the
+            # base-currency value.
+            body["expense_currency_id"] = str(foreign)
+            body["foreign_amount"] = amount
+            body["exchange_rate"] = exchange_rate
+            body["amount"] = round(amount * exchange_rate, 2)
+        else:
+            body["amount"] = amount
         created = self._req("POST", "expenses", json=body).get("data", {})
         if not created.get("id"):
             raise InvoiceNinjaError("expense creation returned no id")

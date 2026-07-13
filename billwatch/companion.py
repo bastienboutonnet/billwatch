@@ -341,7 +341,8 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
             try:
                 vendor_id = ninja.find_or_create_vendor(vendor)
                 eid = ninja.create_expense(vendor_id=vendor_id, amount=amount,
-                                           currency=currency, exchange_rate=rate,
+                                           currency=currency, base_currency=base,
+                                           exchange_rate=rate,
                                            date=exp_date.isoformat(), public_notes=notes)
                 client.set_ninja_id(doc, eid)   # store id first so we never dup
                 log.info("IN: created expense %s for doc %s (%s, %.2f)",
@@ -358,12 +359,7 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
         elif action == "mark_paid":
             try:
                 if not ninja.is_expense_paid(doc.ninja_id):
-                    today = date.today()
-                    money = parse_money(doc.amount_raw or doc.content)
-                    rate = (fx_rate(money[0], base, today)
-                            if money and money[0] != base else None)
-                    ninja.mark_expense_paid(doc.ninja_id, today.isoformat(),
-                                            exchange_rate=rate)
+                    ninja.mark_expense_paid(doc.ninja_id, date.today().isoformat())
                     log.info("IN: marked expense %s paid (doc %s)", doc.ninja_id, doc.id)
             except InvoiceNinjaError as e:
                 log.warning("IN: mark-paid failed for doc %s: %s", doc.id, e)
