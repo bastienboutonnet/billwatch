@@ -91,9 +91,13 @@ PAPERLESS_LAST_REMINDED_FIELD = os.environ.get("PAPERLESS_LAST_REMINDED_FIELD", 
 # Text custom field storing the Invoice Ninja expense id (idempotency +
 # paid-sync target). Only needed when the Invoice Ninja sync is enabled.
 PAPERLESS_NINJA_ID_FIELD = os.environ.get("PAPERLESS_NINJA_ID_FIELD", "Invoice Ninja id")
-# Text custom field for the invoice amount (e.g. "$12.72"). BillWatch fills it
-# from OCR when it can; you can correct it. Read back for the IN expense.
+# Editable custom fields for the invoice money. BillWatch fills them from OCR and
+# reconciles the Invoice Ninja expense to them each cycle, so correcting one here
+# flows through. Amount is the number (e.g. "12.72"), Currency an ISO code
+# (USD/EUR/GBP), Exchange rate the rate to the IN base currency (blank = refetch).
 PAPERLESS_AMOUNT_FIELD = os.environ.get("PAPERLESS_AMOUNT_FIELD", "Amount")
+PAPERLESS_CURRENCY_FIELD = os.environ.get("PAPERLESS_CURRENCY_FIELD", "Currency")
+PAPERLESS_EXCHANGE_RATE_FIELD = os.environ.get("PAPERLESS_EXCHANGE_RATE_FIELD", "Exchange rate")
 
 # --- Invoice Ninja expense sync (optional) ---
 # Push confident/reviewed invoices into Invoice Ninja as Expenses, and mark the

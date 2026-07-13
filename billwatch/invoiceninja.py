@@ -104,29 +104,49 @@ class InvoiceNinjaClient:
             raise InvoiceNinjaError("expense creation returned no id")
         return eid
 
-    def ensure_expense_currency(self, expense_id: str, currency: str, amount: float,
-                                base_currency: str, exchange_rate: Optional[float]) -> bool:
-        """Set a foreign expense's currency + base conversion, if not already set.
+    def reconcile_expense(self, expense_id: str, currency: str, amount: float,
+                          base_currency: str, exchange_rate: Optional[float]) -> bool:
+        """Make the expense match (currency, amount, rate) — used to apply both the
+        post-create currency (IN clobbers one set during creation) and any later
+        corrections made in Paperless. Returns True if it changed anything.
 
-        Must run AFTER the create has settled: IN honours currency_id on update
-        but a job clobbers one set during/just after creation. Returns True if it
-        applied a change. No-op for base-currency expenses or already-correct ones.
+        For a foreign currency: currency_id = expense currency, amount in it,
+        invoice_currency_id = base + foreign_amount = converted value (this is what
+        makes IN show the conversion). For the base currency: just the amount.
         """
         foreign = _CURRENCY_ID.get((currency or "").upper())
         base = _CURRENCY_ID.get(base_currency.upper())
-        if not (foreign and base and foreign != base and exchange_rate):
+        exp = self.get_expense(expense_id)
+
+        def near(a, b) -> bool:
+            try:
+                return abs(float(a or 0) - float(b or 0)) < 0.005
+            except (TypeError, ValueError):
+                return False
+
+        if foreign and base and foreign != base and exchange_rate:
+            want = {
+                "currency_id": str(foreign),
+                "amount": amount,
+                "invoice_currency_id": str(base),
+                "foreign_amount": round(amount * exchange_rate, 2),
+                "exchange_rate": exchange_rate,
+            }
+            same = (str(exp.get("currency_id") or "") == str(foreign)
+                    and str(exp.get("invoice_currency_id") or "") == str(base)
+                    and near(exp.get("amount"), amount)
+                    and near(exp.get("foreign_amount"), want["foreign_amount"])
+                    and near(exp.get("exchange_rate"), exchange_rate))
+        else:
+            target = base or _CURRENCY_ID.get((currency or "").upper())
+            want = {"currency_id": str(target), "amount": amount,
+                    "invoice_currency_id": "", "foreign_amount": 0, "exchange_rate": 1}
+            same = (str(exp.get("currency_id") or "") == str(target)
+                    and near(exp.get("amount"), amount)
+                    and not exp.get("invoice_currency_id"))
+        if same:
             return False
-        if str(self.get_expense(expense_id).get("currency_id") or "") == str(foreign):
-            return False  # already applied
-        # invoice_currency_id (= base) is what makes IN actually apply the
-        # conversion; foreign_amount is the value in it.
-        self._req("PUT", f"expenses/{expense_id}", json={
-            "currency_id": str(foreign),
-            "amount": amount,
-            "invoice_currency_id": str(base),
-            "foreign_amount": round(amount * exchange_rate, 2),
-            "exchange_rate": exchange_rate,
-        })
+        self._req("PUT", f"expenses/{expense_id}", json=want)
         return True
 
     def get_expense(self, expense_id: str) -> dict:

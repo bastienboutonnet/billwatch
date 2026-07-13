@@ -90,6 +90,10 @@ def _client() -> PaperlessClient:
                         if config.INVOICE_NINJA_ENABLED else ""),
         amount_field=(config.PAPERLESS_AMOUNT_FIELD
                       if config.INVOICE_NINJA_ENABLED else ""),
+        currency_field=(config.PAPERLESS_CURRENCY_FIELD
+                        if config.INVOICE_NINJA_ENABLED else ""),
+        rate_field=(config.PAPERLESS_EXCHANGE_RATE_FIELD
+                    if config.INVOICE_NINJA_ENABLED else ""),
         public_base=config.PAPERLESS_PUBLIC_URL,
     )
 
@@ -184,8 +188,7 @@ def fill_due_dates(client: PaperlessClient) -> None:
         received = doc.created or date.today()
         inv = parse_invoice(doc.content, received, config.DEFAULT_TERM_DAYS)
         client.set_due_date(doc, inv.due)
-        if inv.amount and not doc.amount_raw:
-            client.set_amount(doc, inv.amount)  # no-op if the field isn't configured
+        # Amount/Currency/Exchange-rate fields are filled by the Invoice Ninja sync.
         low_confidence = inv.due_source == "fallback"
 
         summary = f"Pay invoice: {inv.amount or '?'}"
@@ -263,7 +266,7 @@ def run_reminders(client: PaperlessClient, today: date | None = None) -> None:
         # Amount / invoice no aren't stored in Paperless; re-read from the OCR text.
         rows = [
             ("From", r.doc.title),
-            ("Amount", r.doc.amount_raw or parse_amount(r.doc.content) or ""),
+            ("Amount", _money_display(r.doc)),
             ("Invoice no", parse_invoice_no(r.doc.content) or ""),
             ("Due date", r.doc.due.isoformat()),
             ("Status", when),
@@ -290,15 +293,44 @@ def _amount_to_float(amount: str | None) -> float | None:
     return _number_to_float(amount) if amount else None
 
 
-def _doc_money(client: PaperlessClient, doc: PaperlessDoc):
-    """(currency, amount) for a doc — from a human-set Amount field if present,
-    else parsed from OCR and written back to the field. None if unknown."""
-    if doc.amount_raw:
-        return parse_money(doc.amount_raw)   # human override wins (any format)
-    money = parse_money(doc.content)
-    if money:
-        client.set_amount(doc, parse_amount(doc.content))  # store the display form
-    return money
+_CUR_SYMBOL = {"USD": "$", "EUR": "€", "GBP": "£"}
+
+
+def _doc_money_fields(client: PaperlessClient, doc: PaperlessDoc, base: str):
+    """(currency, amount, rate) from a doc's editable Currency/Amount/Exchange-rate
+    fields, filled from OCR the first time. Human edits win. rate is None for the
+    base currency and keys off the invoice/document date (not the due date); clear
+    the rate field to force a re-fetch. Returns None if amount/currency unknown."""
+    from .invoiceninja import fx_rate
+    currency = (doc.currency_raw or "").strip().upper() or None
+    amount = _number_to_float(doc.amount_raw) if doc.amount_raw else None
+    if currency is None or amount is None:
+        m = parse_money(doc.content)
+        if m:
+            if currency is None:
+                currency = m[0]
+                client.set_currency(doc, currency)
+            if amount is None:
+                amount = m[1]
+                client.set_amount(doc, f"{amount:.2f}")
+    if currency is None or amount is None:
+        return None
+    rate = None
+    if currency != base:
+        rate = _number_to_float(doc.rate_raw) if doc.rate_raw else None
+        if rate is None:
+            rate = fx_rate(currency, base, doc.created or date.today())
+            if rate:
+                client.set_rate(doc, f"{rate:.5f}")
+    return currency, amount, rate
+
+
+def _money_display(doc: PaperlessDoc) -> str:
+    cur = (doc.currency_raw or "").strip().upper()
+    amt = (doc.amount_raw or "").strip()
+    if cur and amt:
+        return f"{_CUR_SYMBOL.get(cur, cur + ' ')}{amt}"
+    return parse_amount(doc.content) or "?"
 
 
 def _ninja_action(pushed: bool, needs_review: bool, paid: bool, has_due: bool) -> str | None:
@@ -314,7 +346,7 @@ def _ninja_action(pushed: bool, needs_review: bool, paid: bool, has_due: bool) -
 
 
 def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
-    from .invoiceninja import InvoiceNinjaError, fx_rate
+    from .invoiceninja import InvoiceNinjaError
     base = config.INVOICE_NINJA_BASE_CURRENCY
     for doc in client.invoices():
         pushed = bool(doc.ninja_id)
@@ -325,21 +357,21 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
             has_due=doc.due is not None,
         )
         if action == "create":
-            money = _doc_money(client, doc)
-            if money is None:
-                log.info("IN: skipping doc %s — no amount (set the Amount field "
-                         "in Paperless to import it)", doc.id)
+            fields = _doc_money_fields(client, doc, base)
+            if fields is None:
+                log.info("IN: skipping doc %s — no amount (fill the Amount/Currency "
+                         "fields in Paperless to import it)", doc.id)
                 continue
-            _, amount = money
+            currency, amount, _rate = fields
             vendor = doc.correspondent or doc.title or "Unknown vendor"
             invoice_no = parse_invoice_no(doc.content) or ""
             exp_date = doc.created or date.today()
             notes = (f"Imported by BillWatch\nInvoice: {invoice_no}\n"
                      f"Due: {doc.due}\n{client.document_url(doc.id)}")
             try:
-                # Currency is applied on a later cycle (see below), not here — IN
-                # clobbers a currency set during/right after the create.
-                vendor_id = ninja.find_or_create_vendor(vendor, currency=money[0])
+                # Currency/conversion applied on a later cycle (reconcile below) —
+                # IN clobbers a currency set during/right after the create.
+                vendor_id = ninja.find_or_create_vendor(vendor, currency=currency)
                 eid = ninja.create_expense(vendor_id=vendor_id, amount=amount,
                                            date=exp_date.isoformat(), public_notes=notes)
                 client.set_ninja_id(doc, eid)   # store id first so we never dup
@@ -361,19 +393,19 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
             except InvoiceNinjaError as e:
                 log.warning("IN: mark-paid failed for doc %s: %s", doc.id, e)
 
-        # For expenses created on a PREVIOUS cycle (so IN's create job has
-        # settled), set the foreign currency + base conversion if not yet applied.
+        # For expenses created on a PREVIOUS cycle (IN's create job has settled),
+        # reconcile the expense to the Paperless Currency/Amount/Exchange-rate
+        # fields — this applies the currency and any later corrections you make.
         if pushed:
-            money = _doc_money(client, doc)
-            if money and money[0] != base:
+            fields = _doc_money_fields(client, doc, base)
+            if fields:
+                currency, amount, rate = fields
                 try:
-                    rate = fx_rate(money[0], base, doc.created or date.today())
-                    if ninja.ensure_expense_currency(doc.ninja_id, money[0],
-                                                     money[1], base, rate):
-                        log.info("IN: set expense %s to %s (doc %s)",
-                                 doc.ninja_id, money[0], doc.id)
+                    if ninja.reconcile_expense(doc.ninja_id, currency, amount, base, rate):
+                        log.info("IN: reconciled expense %s -> %s %.2f (doc %s)",
+                                 doc.ninja_id, currency, amount, doc.id)
                 except InvoiceNinjaError as e:
-                    log.warning("IN: currency fix failed for doc %s: %s", doc.id, e)
+                    log.warning("IN: reconcile failed for doc %s: %s", doc.id, e)
 
 
 def _ninja_client():

@@ -46,6 +46,8 @@ class PaperlessDoc:
     correspondent: Optional[str] = None   # resolved correspondent name (the vendor)
     ninja_id: Optional[str] = None        # Invoice Ninja expense id, if pushed
     amount_raw: Optional[str] = None      # value of the Amount custom field
+    currency_raw: Optional[str] = None    # value of the Currency custom field
+    rate_raw: Optional[str] = None        # value of the Exchange-rate custom field
     # Raw custom-field entries ({"field": id, "value": ...}), kept so a PATCH can
     # preserve fields this companion doesn't manage.
     custom_fields: list[dict] = field(default_factory=list)
@@ -74,6 +76,8 @@ class PaperlessClient:
         last_reminded_field: str = "",
         ninja_id_field: str = "",
         amount_field: str = "",
+        currency_field: str = "",
+        rate_field: str = "",
         public_base: str = "",
         session=None,
         timeout: int = 30,
@@ -96,6 +100,8 @@ class PaperlessClient:
             "last_reminded_field": last_reminded_field,
             "ninja_id_field": ninja_id_field,
             "amount_field": amount_field,
+            "currency_field": currency_field,
+            "rate_field": rate_field,
         }
         self._ids: dict[str, Optional[int]] = {}
         self._correspondents: Optional[dict[int, str]] = None  # id -> name cache
@@ -166,6 +172,14 @@ class PaperlessClient:
                 self._lookup_id("custom_fields/", self._names["amount_field"])
                 if self._names["amount_field"] else None
             ),
+            "currency_field": (
+                self._lookup_id("custom_fields/", self._names["currency_field"])
+                if self._names["currency_field"] else None
+            ),
+            "rate_field": (
+                self._lookup_id("custom_fields/", self._names["rate_field"])
+                if self._names["rate_field"] else None
+            ),
         }
         log.info("Resolved Paperless ids: %s", self._ids)
 
@@ -188,9 +202,11 @@ class PaperlessClient:
         lr_id = self._id("last_reminded_field")
         ninja_id_field = self._id("ninja_id_field")
         amount_id = self._id("amount_field")
+        currency_id = self._id("currency_field")
+        rate_id = self._id("rate_field")
         cfs = row.get("custom_fields") or []
         due = last_reminded = None
-        ninja_id = amount_raw = None
+        ninja_id = amount_raw = currency_raw = rate_raw = None
         for cf in cfs:
             if cf.get("field") == due_id:
                 due = _parse_date(cf.get("value"))
@@ -200,6 +216,10 @@ class PaperlessClient:
                 ninja_id = cf.get("value") or None
             elif amount_id is not None and cf.get("field") == amount_id:
                 amount_raw = cf.get("value") or None
+            elif currency_id is not None and cf.get("field") == currency_id:
+                currency_raw = cf.get("value") or None
+            elif rate_id is not None and cf.get("field") == rate_id:
+                rate_raw = cf.get("value") or None
         return PaperlessDoc(
             id=row["id"],
             title=row.get("title") or f"doc {row['id']}",
@@ -211,6 +231,8 @@ class PaperlessClient:
             correspondent=self._correspondent_name(row.get("correspondent")),
             ninja_id=ninja_id,
             amount_raw=amount_raw,
+            currency_raw=currency_raw,
+            rate_raw=rate_raw,
             custom_fields=cfs,
         )
 
@@ -275,14 +297,23 @@ class PaperlessClient:
         doc.ninja_id = str(value)
         doc.custom_fields = body["custom_fields"]
 
-    def set_amount(self, doc: PaperlessDoc, value: str) -> None:
-        field_id = self._id("amount_field")
+    def _set_field(self, doc: PaperlessDoc, key: str, attr: str, value: str) -> None:
+        field_id = self._id(key)
         if field_id is None:
             return  # feature not configured
         body = {"custom_fields": self._merged_custom_fields(doc, field_id, str(value))}
         self._patch(f"documents/{doc.id}/", body)
-        doc.amount_raw = str(value)
+        setattr(doc, attr, str(value))
         doc.custom_fields = body["custom_fields"]
+
+    def set_amount(self, doc: PaperlessDoc, value: str) -> None:
+        self._set_field(doc, "amount_field", "amount_raw", value)
+
+    def set_currency(self, doc: PaperlessDoc, value: str) -> None:
+        self._set_field(doc, "currency_field", "currency_raw", value)
+
+    def set_rate(self, doc: PaperlessDoc, value: str) -> None:
+        self._set_field(doc, "rate_field", "rate_raw", value)
 
     def add_tag(self, doc: PaperlessDoc, tag_key: str) -> None:
         tag_id = self._id(tag_key)
