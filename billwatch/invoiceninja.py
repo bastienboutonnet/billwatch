@@ -94,29 +94,29 @@ class InvoiceNinjaClient:
                        currency: Optional[str] = None, base_currency: str = "EUR",
                        exchange_rate: Optional[float] = None,
                        public_notes: str = "", private_notes: str = "") -> str:
-        body = {
+        created = self._req("POST", "expenses", json={
             "vendor_id": vendor_id,
             "date": date,
+            "amount": amount,
             "public_notes": public_notes,
             "private_notes": private_notes,
-        }
+        }).get("data", {})
+        eid = created.get("id")
+        if not eid:
+            raise InvoiceNinjaError("expense creation returned no id")
         foreign = _CURRENCY_ID.get((currency or "").upper())
         base = _CURRENCY_ID.get(base_currency.upper())
         if foreign and base and foreign != base and exchange_rate:
-            # Matches how IN stores a foreign-currency expense: currency_id is the
-            # expense currency, amount is in it, and foreign_amount is the value
-            # converted to the company base. IN only keeps a non-base currency_id
-            # when foreign_amount is supplied too.
-            body["currency_id"] = str(foreign)
-            body["amount"] = amount
-            body["foreign_amount"] = round(amount * exchange_rate, 2)
-            body["exchange_rate"] = exchange_rate
-        else:
-            body["amount"] = amount
-        created = self._req("POST", "expenses", json=body).get("data", {})
-        if not created.get("id"):
-            raise InvoiceNinjaError("expense creation returned no id")
-        return created["id"]
+            # IN forces currency_id to the company base on create, but honours it
+            # on update. So set the foreign currency + converted base amount here:
+            # currency_id = expense currency, amount in it, foreign_amount = base.
+            self._req("PUT", f"expenses/{eid}", json={
+                "currency_id": str(foreign),
+                "amount": amount,
+                "foreign_amount": round(amount * exchange_rate, 2),
+                "exchange_rate": exchange_rate,
+            })
+        return eid
 
     def get_expense(self, expense_id: str) -> dict:
         return self._req("GET", f"expenses/{expense_id}").get("data", {})
