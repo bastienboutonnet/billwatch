@@ -91,8 +91,6 @@ class InvoiceNinjaClient:
 
     # --- expenses -----------------------------------------------------------
     def create_expense(self, *, vendor_id: str, amount: float, date: str,
-                       currency: Optional[str] = None, base_currency: str = "EUR",
-                       exchange_rate: Optional[float] = None,
                        public_notes: str = "", private_notes: str = "") -> str:
         created = self._req("POST", "expenses", json={
             "vendor_id": vendor_id,
@@ -104,19 +102,29 @@ class InvoiceNinjaClient:
         eid = created.get("id")
         if not eid:
             raise InvoiceNinjaError("expense creation returned no id")
+        return eid
+
+    def ensure_expense_currency(self, expense_id: str, currency: str, amount: float,
+                                base_currency: str, exchange_rate: Optional[float]) -> bool:
+        """Set a foreign expense's currency + base conversion, if not already set.
+
+        Must run AFTER the create has settled: IN honours currency_id on update
+        but a job clobbers one set during/just after creation. Returns True if it
+        applied a change. No-op for base-currency expenses or already-correct ones.
+        """
         foreign = _CURRENCY_ID.get((currency or "").upper())
         base = _CURRENCY_ID.get(base_currency.upper())
-        if foreign and base and foreign != base and exchange_rate:
-            # IN forces currency_id to the company base on create, but honours it
-            # on update. So set the foreign currency + converted base amount here:
-            # currency_id = expense currency, amount in it, foreign_amount = base.
-            self._req("PUT", f"expenses/{eid}", json={
-                "currency_id": str(foreign),
-                "amount": amount,
-                "foreign_amount": round(amount * exchange_rate, 2),
-                "exchange_rate": exchange_rate,
-            })
-        return eid
+        if not (foreign and base and foreign != base and exchange_rate):
+            return False
+        if str(self.get_expense(expense_id).get("currency_id") or "") == str(foreign):
+            return False  # already applied
+        self._req("PUT", f"expenses/{expense_id}", json={
+            "currency_id": str(foreign),
+            "amount": amount,
+            "foreign_amount": round(amount * exchange_rate, 2),
+            "exchange_rate": exchange_rate,
+        })
+        return True
 
     def get_expense(self, expense_id: str) -> dict:
         return self._req("GET", f"expenses/{expense_id}").get("data", {})

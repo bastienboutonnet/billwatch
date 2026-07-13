@@ -317,8 +317,9 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
     from .invoiceninja import InvoiceNinjaError, fx_rate
     base = config.INVOICE_NINJA_BASE_CURRENCY
     for doc in client.invoices():
+        pushed = bool(doc.ninja_id)
         action = _ninja_action(
-            pushed=bool(doc.ninja_id),
+            pushed=pushed,
             needs_review=client.has_tag(doc, "review_tag"),
             paid=client.has_tag(doc, "paid_tag"),
             has_due=doc.due is not None,
@@ -329,25 +330,21 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
                 log.info("IN: skipping doc %s — no amount (set the Amount field "
                          "in Paperless to import it)", doc.id)
                 continue
-            currency, amount = money
+            _, amount = money
             vendor = doc.correspondent or doc.title or "Unknown vendor"
             invoice_no = parse_invoice_no(doc.content) or ""
             exp_date = doc.created or date.today()
-            # Convert a foreign-currency expense to the company base at the
-            # expense date's rate (best-effort; None -> IN keeps its default).
-            rate = fx_rate(currency, base, exp_date) if currency != base else None
             notes = (f"Imported by BillWatch\nInvoice: {invoice_no}\n"
                      f"Due: {doc.due}\n{client.document_url(doc.id)}")
             try:
-                vendor_id = ninja.find_or_create_vendor(vendor, currency=currency)
+                # Currency is applied on a later cycle (see below), not here — IN
+                # clobbers a currency set during/right after the create.
+                vendor_id = ninja.find_or_create_vendor(vendor, currency=money[0])
                 eid = ninja.create_expense(vendor_id=vendor_id, amount=amount,
-                                           currency=currency, base_currency=base,
-                                           exchange_rate=rate,
                                            date=exp_date.isoformat(), public_notes=notes)
                 client.set_ninja_id(doc, eid)   # store id first so we never dup
                 log.info("IN: created expense %s for doc %s (%s, %.2f)",
                          eid, doc.id, vendor, amount)
-                # Attach the PDF (best-effort — a failure here won't re-create).
                 try:
                     fname = f"{invoice_no or f'doc-{doc.id}'}.pdf"
                     ninja.attach_document(eid, fname, client.download(doc.id))
@@ -363,6 +360,20 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
                     log.info("IN: marked expense %s paid (doc %s)", doc.ninja_id, doc.id)
             except InvoiceNinjaError as e:
                 log.warning("IN: mark-paid failed for doc %s: %s", doc.id, e)
+
+        # For expenses created on a PREVIOUS cycle (so IN's create job has
+        # settled), set the foreign currency + base conversion if not yet applied.
+        if pushed:
+            money = _doc_money(client, doc)
+            if money and money[0] != base:
+                try:
+                    rate = fx_rate(money[0], base, doc.created or date.today())
+                    if ninja.ensure_expense_currency(doc.ninja_id, money[0],
+                                                     money[1], base, rate):
+                        log.info("IN: set expense %s to %s (doc %s)",
+                                 doc.ninja_id, money[0], doc.id)
+                except InvoiceNinjaError as e:
+                    log.warning("IN: currency fix failed for doc %s: %s", doc.id, e)
 
 
 def _ninja_client():
