@@ -100,6 +100,18 @@ def _mk_date(y: int, m: int, d: int) -> Optional[date]:
         return None
 
 
+_ANY_DATE = re.compile(
+    r"\b\d{4}-\d{1,2}-\d{1,2}\b"                                          # ISO
+    r"|\b\d{1,2}(?:e|st|nd|rd|th)?\.?\s+[A-Za-zÀ-ÿ]{3,10}\.?\s+\d{4}\b"   # 15 augustus 2026
+    r"|\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b",                              # 15-08-2026
+    re.IGNORECASE,
+)
+
+
+def _count_dates(s: str) -> int:
+    return len(_ANY_DATE.findall(s))
+
+
 def _date_and_pos(s: str) -> tuple[Optional[date], int]:
     """First parseable date in a snippet (European day-first) and its position."""
     m = _ISO_DATE.search(s)
@@ -130,10 +142,15 @@ def _labelled_date(text: str, labels: list[str], window: int = 45) -> Optional[d
                 break
             after = text[idx + len(label): idx + len(label) + window]
             found, pos = _date_and_pos(after)
-            # Skip if another field label sits between our label and the date —
-            # that means a stacked label/value column, so the date isn't ours.
-            if found and not any(c in after[:pos].lower() for c in _COMPETING_LABELS):
-                return found
+            if found:
+                # Two ambiguity signals for stacked label/value columns: another
+                # field label sitting before the date, or several dates clustered
+                # in the window (a value row). Either way we can't trust proximity,
+                # so bail and let it fall back to "review" rather than guess wrong.
+                competing = any(c in after[:pos].lower() for c in _COMPETING_LABELS)
+                ambiguous = _count_dates(after) > 1
+                if not competing and not ambiguous:
+                    return found
             start = idx + len(label)
     return None
 

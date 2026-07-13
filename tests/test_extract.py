@@ -48,6 +48,13 @@ CASES = [
     ("Factuurnummer\nFactuurdatum\nVervaldatum\nUw referentie\n"
      "20260410\n13-07-2026\n12-08-2026\nTotaal inclusief BTW € 415,03",
      date(2026, 8, 11), "fallback", "€415,03"),
+
+    # Bare stacked header — no sentence AND no competing label between. The
+    # two-dates-in-the-window signal must still force a review-flagged fallback,
+    # not a confident wrong date.
+    ("Factuurnummer\nFactuurdatum\nVervaldatum\n"
+     "20260410\n13-07-2026\n12-08-2026\nTotaal € 415,03",
+     date(2026, 8, 11), "fallback", "€415,03"),
 ]
 
 
