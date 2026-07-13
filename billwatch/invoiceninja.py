@@ -95,13 +95,14 @@ class InvoiceNinjaClient:
         foreign = _CURRENCY_ID.get((currency or "").upper())
         base = _CURRENCY_ID.get(base_currency.upper())
         if foreign and base and foreign != base and exchange_rate:
-            # IN forces currency_id to the company base, so a foreign expense is
-            # modelled as expense_currency_id + foreign_amount, with `amount` the
-            # base-currency value.
-            body["expense_currency_id"] = str(foreign)
-            body["foreign_amount"] = amount
+            # Matches how IN stores a foreign-currency expense: currency_id is the
+            # expense currency, amount is in it, and foreign_amount is the value
+            # converted to the company base. IN only keeps a non-base currency_id
+            # when foreign_amount is supplied too.
+            body["currency_id"] = str(foreign)
+            body["amount"] = amount
+            body["foreign_amount"] = round(amount * exchange_rate, 2)
             body["exchange_rate"] = exchange_rate
-            body["amount"] = round(amount * exchange_rate, 2)
         else:
             body["amount"] = amount
         created = self._req("POST", "expenses", json=body).get("data", {})
