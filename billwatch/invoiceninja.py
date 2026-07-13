@@ -118,9 +118,12 @@ class InvoiceNinjaClient:
             return False
         if str(self.get_expense(expense_id).get("currency_id") or "") == str(foreign):
             return False  # already applied
+        # invoice_currency_id (= base) is what makes IN actually apply the
+        # conversion; foreign_amount is the value in it.
         self._req("PUT", f"expenses/{expense_id}", json={
             "currency_id": str(foreign),
             "amount": amount,
+            "invoice_currency_id": str(base),
             "foreign_amount": round(amount * exchange_rate, 2),
             "exchange_rate": exchange_rate,
         })
