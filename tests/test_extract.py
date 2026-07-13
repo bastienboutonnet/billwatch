@@ -33,6 +33,21 @@ CASES = [
     ("Invoice date: 12 July 2026\nPlease pay by 20 August 2026\n"
      "Amount due: € 1,250.00",
      date(2026, 8, 20), "label", "€1,250.00"),
+
+    # Stacked label/value columns (real autobestickeren.com invoice): the date
+    # right after "Vervaldatum" is actually the factuurdatum value. The restated
+    # payment sentence must win -> 12-08-2026, not 13-07-2026.
+    ("Factuurnummer\nFactuurdatum\nVervaldatum\nUw referentie\n"
+     "20260410\n13-07-2026\n12-08-2026\n"
+     "Totaal inclusief BTW € 415,03\n"
+     "Wij verzoeken u het bedrag van € 415,03 voor 12-08-2026 te voldoen.",
+     date(2026, 8, 12), "sentence", "€415,03"),
+
+    # Same stacked header WITHOUT the sentence: rather than confidently return the
+    # wrong 13-07-2026, the guard makes it fall back (flagged for review).
+    ("Factuurnummer\nFactuurdatum\nVervaldatum\nUw referentie\n"
+     "20260410\n13-07-2026\n12-08-2026\nTotaal inclusief BTW € 415,03",
+     date(2026, 8, 11), "fallback", "€415,03"),
 ]
 
 

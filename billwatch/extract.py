@@ -62,10 +62,16 @@ _MONTHS = {**_EN_MONTHS, **_NL_MONTHS}
 _DUE_LABELS = [
     "uiterste betaaldatum", "uiterste betaal datum", "vervaldatum", "verval datum",
     "vervaldag", "te betalen voor", "te betalen vóór", "gelieve te betalen voor",
+    "te voldoen voor", "voldoen voor", "voldaan voor",
     "betalen voor", "betaal voor", "betaaldatum", "vervalt op", "expiratiedatum",
     "due date", "payment due", "amount due by", "pay before", "please pay by",
     "due by", "date due",
 ]
+
+# Field labels that, if they appear between a due-date label and the date we
+# found, mean the columns are stacked and the date belongs to a different field.
+_COMPETING_LABELS = ("factuurnummer", "factuurnr", "referentie", "kenmerk",
+                     "klantnummer", "ordernummer", "debiteurnummer", "onderwerp")
 _INVOICE_DATE_LABELS = [
     "factuurdatum", "factuur datum", "datum factuur", "invoice date",
     "date of invoice", "datum",
@@ -94,20 +100,24 @@ def _mk_date(y: int, m: int, d: int) -> Optional[date]:
         return None
 
 
-def _first_date_in(snippet: str) -> Optional[date]:
-    """Find the first parseable date in a short text snippet (European day-first)."""
-    m = _ISO_DATE.search(snippet)
+def _date_and_pos(s: str) -> tuple[Optional[date], int]:
+    """First parseable date in a snippet (European day-first) and its position."""
+    m = _ISO_DATE.search(s)
     if m:
-        return _mk_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    m = _TXT_DATE.search(snippet)
+        return _mk_date(int(m.group(1)), int(m.group(2)), int(m.group(3))), m.start()
+    m = _TXT_DATE.search(s)
     if m:
         month = _MONTHS.get(m.group(2).lower())
         if month:
-            return _mk_date(int(m.group(3)), month, int(m.group(1)))
-    m = _NUM_DATE.search(snippet)
+            return _mk_date(int(m.group(3)), month, int(m.group(1))), m.start()
+    m = _NUM_DATE.search(s)
     if m:
-        return _mk_date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
-    return None
+        return _mk_date(int(m.group(3)), int(m.group(2)), int(m.group(1))), m.start()
+    return None, -1
+
+
+def _first_date_in(snippet: str) -> Optional[date]:
+    return _date_and_pos(snippet)[0]
 
 
 def _labelled_date(text: str, labels: list[str], window: int = 45) -> Optional[date]:
@@ -118,9 +128,11 @@ def _labelled_date(text: str, labels: list[str], window: int = 45) -> Optional[d
             idx = low.find(label, start)
             if idx == -1:
                 break
-            snippet = text[idx: idx + len(label) + window]
-            found = _first_date_in(snippet)
-            if found:
+            after = text[idx + len(label): idx + len(label) + window]
+            found, pos = _date_and_pos(after)
+            # Skip if another field label sits between our label and the date —
+            # that means a stacked label/value column, so the date isn't ours.
+            if found and not any(c in after[:pos].lower() for c in _COMPETING_LABELS):
                 return found
             start = idx + len(label)
     return None
@@ -131,21 +143,37 @@ _TERM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A restated payment instruction with an explicit date, e.g.
+# "...bedrag van €415,03 voor 12-08-2026 te voldoen..." — immune to the
+# label/value column layout that trips up proximity matching.
+_DUE_SENTENCE_RE = re.compile(
+    r"voor\s+(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\s+(?:te\s+)?(?:voldoen|betalen|voldaan|betaald)",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class DueResult:
     due: Optional[date]
-    source: str  # 'label' | 'term' | 'fallback' | 'none'
+    source: str  # 'sentence' | 'label' | 'term' | 'fallback' | 'none'
 
 
 def parse_due_date(text: str, received: date, default_term_days: int = 30) -> DueResult:
     """Determine the payment due date from invoice text.
 
     Order of preference:
-      1. An explicitly labelled due date (vervaldatum / due date / ...).
-      2. Invoice date + payment term ("betalingstermijn 30 dagen").
-      3. received + default_term_days.
+      1. A restated payment sentence ("... voor <date> te voldoen") — unambiguous
+         and immune to column-layout quirks.
+      2. An explicitly labelled due date (vervaldatum / due date / ...).
+      3. Invoice date + payment term ("betalingstermijn 30 dagen").
+      4. received + default_term_days.
     """
+    m = _DUE_SENTENCE_RE.search(text)
+    if m:
+        d = _first_date_in(m.group(1))
+        if d:
+            return DueResult(d, "sentence")
+
     d = _labelled_date(text, _DUE_LABELS)
     if d:
         return DueResult(d, "label")
@@ -196,9 +224,17 @@ _INV_NO_RE = re.compile(
 )
 
 
+# In a stacked header the regex can grab the next label instead of the number.
+_INV_NO_STOPWORDS = ("factuurdatum", "vervaldatum", "vervaldag", "datum",
+                     "referentie", "onderwerp", "betaaldatum")
+
+
 def parse_invoice_no(text: str) -> Optional[str]:
     m = _INV_NO_RE.search(text)
-    return m.group(1).strip() if m else None
+    if not m:
+        return None
+    val = m.group(1).strip()
+    return None if val.lower() in _INV_NO_STOPWORDS else val
 
 
 @dataclass

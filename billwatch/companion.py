@@ -109,6 +109,7 @@ def _notify(title: str, push_body: str, *, priority: str = "default",
 
 
 _DUE_SOURCE_TEXT = {
+    "sentence": "payment date stated in the text",
     "label": "labelled date in the document",
     "term": "invoice date + payment term",
     "fallback": "guessed — no due date found",
