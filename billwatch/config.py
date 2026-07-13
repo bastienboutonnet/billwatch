@@ -102,6 +102,9 @@ PAPERLESS_AMOUNT_FIELD = os.environ.get("PAPERLESS_AMOUNT_FIELD", "Amount")
 INVOICE_NINJA_ENABLED = os.environ.get("INVOICE_NINJA_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 INVOICE_NINJA_URL = os.environ.get("INVOICE_NINJA_URL", "").rstrip("/")
 INVOICE_NINJA_TOKEN = os.environ.get("INVOICE_NINJA_TOKEN", "")
+# Your Invoice Ninja company's base currency. Foreign-currency expenses get an
+# exchange_rate to this, fetched (ECB, keyless) for the expense/payment date.
+INVOICE_NINJA_BASE_CURRENCY = os.environ.get("INVOICE_NINJA_BASE_CURRENCY", "EUR").upper()
 
 # --- Behaviour ---
 POLL_INTERVAL = _int("POLL_INTERVAL", 900)          # seconds between inbox polls

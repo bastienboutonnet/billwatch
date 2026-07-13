@@ -11,6 +11,7 @@ stack (matching extract.py / paperless.py).
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Optional
 
 log = logging.getLogger("billwatch.invoiceninja")
@@ -21,6 +22,25 @@ _CURRENCY_ID = {"USD": 1, "GBP": 2, "EUR": 3}
 
 class InvoiceNinjaError(RuntimeError):
     pass
+
+
+def fx_rate(frm: str, to: str, on: date) -> Optional[float]:
+    """Historical FX rate (units of `to` per 1 `frm`) on/around a date, via the
+    keyless ECB service frankfurter.app. Returns None on any failure (best-effort;
+    a missing rate just means IN keeps its default)."""
+    frm, to = frm.upper(), to.upper()
+    if frm == to:
+        return 1.0
+    import requests
+    url = f"https://api.frankfurter.app/{on.isoformat()}"
+    try:
+        r = requests.get(url, params={"from": frm, "to": to}, timeout=15,
+                         headers={"User-Agent": "billwatch"})
+        r.raise_for_status()
+        return r.json().get("rates", {}).get(to)
+    except Exception as e:
+        log.warning("fx rate %s->%s on %s failed: %s", frm, to, on, e)
+        return None
 
 
 class InvoiceNinjaClient:
@@ -64,6 +84,7 @@ class InvoiceNinjaClient:
     # --- expenses -----------------------------------------------------------
     def create_expense(self, *, vendor_id: str, amount: float, date: str,
                        currency: Optional[str] = None,
+                       exchange_rate: Optional[float] = None,
                        public_notes: str = "", private_notes: str = "") -> str:
         body = {
             "vendor_id": vendor_id,
@@ -74,7 +95,9 @@ class InvoiceNinjaClient:
         }
         cid = _CURRENCY_ID.get((currency or "").upper())
         if cid:
-            body["currency_id"] = cid
+            body["currency_id"] = str(cid)   # IN expects the id as a string
+            if exchange_rate:
+                body["exchange_rate"] = exchange_rate
         created = self._req("POST", "expenses", json=body).get("data", {})
         if not created.get("id"):
             raise InvoiceNinjaError("expense creation returned no id")
@@ -86,8 +109,12 @@ class InvoiceNinjaClient:
     def is_expense_paid(self, expense_id: str) -> bool:
         return bool(self.get_expense(expense_id).get("payment_date"))
 
-    def mark_expense_paid(self, expense_id: str, payment_date: str) -> None:
-        self._req("PUT", f"expenses/{expense_id}", json={"payment_date": payment_date})
+    def mark_expense_paid(self, expense_id: str, payment_date: str,
+                          exchange_rate: Optional[float] = None) -> None:
+        body: dict = {"payment_date": payment_date}
+        if exchange_rate:
+            body["exchange_rate"] = exchange_rate
+        self._req("PUT", f"expenses/{expense_id}", json=body)
 
     def attach_document(self, expense_id: str, filename: str, data: bytes) -> None:
         """Attach a file to an expense. Invoice Ninja v5 saves uploaded

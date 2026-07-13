@@ -314,7 +314,8 @@ def _ninja_action(pushed: bool, needs_review: bool, paid: bool, has_due: bool) -
 
 
 def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
-    from .invoiceninja import InvoiceNinjaError
+    from .invoiceninja import InvoiceNinjaError, fx_rate
+    base = config.INVOICE_NINJA_BASE_CURRENCY
     for doc in client.invoices():
         action = _ninja_action(
             pushed=bool(doc.ninja_id),
@@ -331,14 +332,17 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
             currency, amount = money
             vendor = doc.correspondent or doc.title or "Unknown vendor"
             invoice_no = parse_invoice_no(doc.content) or ""
-            expense_date = (doc.created or date.today()).isoformat()
+            exp_date = doc.created or date.today()
+            # Convert a foreign-currency expense to the company base at the
+            # expense date's rate (best-effort; None -> IN keeps its default).
+            rate = fx_rate(currency, base, exp_date) if currency != base else None
             notes = (f"Imported by BillWatch\nInvoice: {invoice_no}\n"
                      f"Due: {doc.due}\n{client.document_url(doc.id)}")
             try:
                 vendor_id = ninja.find_or_create_vendor(vendor)
                 eid = ninja.create_expense(vendor_id=vendor_id, amount=amount,
-                                           currency=currency, date=expense_date,
-                                           public_notes=notes)
+                                           currency=currency, exchange_rate=rate,
+                                           date=exp_date.isoformat(), public_notes=notes)
                 client.set_ninja_id(doc, eid)   # store id first so we never dup
                 log.info("IN: created expense %s for doc %s (%s, %.2f)",
                          eid, doc.id, vendor, amount)
@@ -354,7 +358,12 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
         elif action == "mark_paid":
             try:
                 if not ninja.is_expense_paid(doc.ninja_id):
-                    ninja.mark_expense_paid(doc.ninja_id, date.today().isoformat())
+                    today = date.today()
+                    money = parse_money(doc.amount_raw or doc.content)
+                    rate = (fx_rate(money[0], base, today)
+                            if money and money[0] != base else None)
+                    ninja.mark_expense_paid(doc.ninja_id, today.isoformat(),
+                                            exchange_rate=rate)
                     log.info("IN: marked expense %s paid (doc %s)", doc.ninja_id, doc.id)
             except InvoiceNinjaError as e:
                 log.warning("IN: mark-paid failed for doc %s: %s", doc.id, e)
