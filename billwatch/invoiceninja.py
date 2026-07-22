@@ -24,6 +24,10 @@ class InvoiceNinjaError(RuntimeError):
     pass
 
 
+class InvoiceNinjaUnavailable(InvoiceNinjaError):
+    """Transient connectivity failure (DNS, refused, timeout) — retry next sweep."""
+
+
 def fx_rate(frm: str, to: str, on: date) -> Optional[float]:
     """Historical FX rate (units of `to` per 1 `frm`) on/around a date, via the
     keyless ECB service frankfurter.app. Returns None on any failure (best-effort;
@@ -66,6 +70,8 @@ class InvoiceNinjaClient:
             r = self.session.request(method, url, timeout=self.timeout, **kw)
             r.raise_for_status()
             return r.json() if r.content else {}
+        except (requests.ConnectionError, requests.Timeout) as e:
+            raise InvoiceNinjaUnavailable(f"{method} {url} unreachable: {e}") from e
         except requests.RequestException as e:
             raise InvoiceNinjaError(f"{method} {url} failed: {e}") from e
 

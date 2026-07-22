@@ -29,6 +29,15 @@ class PaperlessError(RuntimeError):
     """Raised when the Paperless API misbehaves or is misconfigured."""
 
 
+class PaperlessUnavailable(PaperlessError):
+    """Raised for transient connectivity failures (DNS, refused, timeout).
+
+    Split out from PaperlessError so the loop can treat a momentary blip — e.g. a
+    `.lan` name that briefly fails to resolve — as "retry next sweep, don't shout"
+    rather than dumping a full traceback every POLL_INTERVAL seconds.
+    """
+
+
 def document_url(public_base: str, doc_id: int) -> str:
     """Stable, phone-openable URL for a document (used as the ntfy click target)."""
     return f"{public_base.rstrip('/')}/documents/{doc_id}/"
@@ -114,6 +123,8 @@ class PaperlessClient:
             r = self.session.get(url, params=params, timeout=self.timeout)
             r.raise_for_status()
             return r.json()
+        except (requests.ConnectionError, requests.Timeout) as e:
+            raise PaperlessUnavailable(f"GET {url} unreachable: {e}") from e
         except requests.RequestException as e:
             raise PaperlessError(f"GET {url} failed: {e}") from e
 
@@ -124,6 +135,8 @@ class PaperlessClient:
             r = self.session.patch(url, json=body, timeout=self.timeout)
             r.raise_for_status()
             return r.json()
+        except (requests.ConnectionError, requests.Timeout) as e:
+            raise PaperlessUnavailable(f"PATCH {url} unreachable: {e}") from e
         except requests.RequestException as e:
             raise PaperlessError(f"PATCH {url} failed: {e}") from e
 

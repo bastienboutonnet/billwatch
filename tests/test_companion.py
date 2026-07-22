@@ -2,11 +2,14 @@
 fire a reminder on a given day. No live Paperless instance — plain doc objects.
 """
 from datetime import date
+import logging
 import sys, os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from billwatch.paperless import PaperlessDoc, document_url
-from billwatch.companion import select_reminders
+from billwatch.paperless import PaperlessDoc, document_url, PaperlessUnavailable
+from billwatch.invoiceninja import InvoiceNinjaUnavailable
+from billwatch.companion import select_reminders, _run_step
+import billwatch.companion as _comp
 
 TODAY = date(2026, 7, 12)
 REMIND_DAYS = [7, 3, 1, 0]
@@ -73,13 +76,84 @@ def _check_selection() -> int:
     return ok
 
 
+# --- _run_step connectivity throttling -----------------------------------------
+class _Capture(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
+_RUN_STEP_CASES = 4  # keep in sync with the checks below
+
+
+def _check_run_step() -> int:
+    """A transient outage should warn once (not every sweep) and recover cleanly;
+    a real bug must still surface as a full traceback each sweep."""
+    ok = 0
+    log = logging.getLogger("billwatch.companion")
+    cap = _Capture()
+    log.addHandler(cap)
+
+    def _boom(exc):
+        def fn():
+            raise exc
+        return fn
+
+    try:
+        # 1. Two down sweeps -> exactly one WARNING, flag latched, step returns False.
+        _comp._unreachable = False
+        cap.records.clear()
+        down = _boom(PaperlessUnavailable("GET http://wanker.lan:8000 unreachable: dns"))
+        r1, r2 = _run_step("fill_due_dates", down), _run_step("fill_due_dates", down)
+        warns = [r for r in cap.records if r.levelno == logging.WARNING]
+        good = r1 is False and r2 is False and len(warns) == 1 and _comp._unreachable
+        ok += good
+        print(f"[{'PASS' if good else 'FAIL'}] transient outage: 2 sweeps -> {len(warns)} warning(s)")
+
+        # 2. Recovery -> one INFO, flag cleared, step returns True.
+        _comp._unreachable = True
+        cap.records.clear()
+        r3 = _run_step("fill_due_dates", lambda: None)
+        infos = [r for r in cap.records if r.levelno == logging.INFO]
+        good = r3 is True and len(infos) == 1 and not _comp._unreachable
+        ok += good
+        print(f"[{'PASS' if good else 'FAIL'}] recovery: -> {len(infos)} info(s), flag cleared")
+
+        # 3. Invoice Ninja connectivity errors throttle the same way.
+        _comp._unreachable = False
+        cap.records.clear()
+        r4 = _run_step("invoice ninja sync",
+                       _boom(InvoiceNinjaUnavailable("POST http://wanker.lan:8012 unreachable: dns")))
+        good = r4 is False and _comp._unreachable
+        ok += good
+        print(f"[{'PASS' if good else 'FAIL'}] ninja outage throttled: flag set")
+
+        # 4. A genuine bug is NOT swallowed as an outage: ERROR each sweep, flag untouched.
+        _comp._unreachable = False
+        cap.records.clear()
+        r5 = _run_step("fill_due_dates", _boom(ValueError("boom")))
+        errs = [r for r in cap.records if r.levelno == logging.ERROR]
+        good = r5 is False and len(errs) == 1 and not _comp._unreachable
+        ok += good
+        print(f"[{'PASS' if good else 'FAIL'}] real bug: -> {len(errs)} error(s), not an outage")
+    finally:
+        log.removeHandler(cap)
+        _comp._unreachable = False
+    return ok
+
+
 def run() -> bool:
     print("== document_url ==")
     u = _check_urls()
     print("\n== select_reminders ==")
     s = _check_selection()
-    total = len(_URL_CASES) + len(_SEL_CASES)
-    passed = u + s
+    print("\n== _run_step throttling ==")
+    rs = _check_run_step()
+    total = len(_URL_CASES) + len(_SEL_CASES) + _RUN_STEP_CASES
+    passed = u + s + rs
     print(f"\n{passed}/{total} passed")
     return passed == total
 

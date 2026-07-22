@@ -31,7 +31,8 @@ from html import escape
 from . import config
 from .extract import (parse_invoice, parse_amount, parse_invoice_no, parse_money,
                       _number_to_float)
-from .paperless import PaperlessClient, PaperlessDoc
+from .paperless import PaperlessClient, PaperlessDoc, PaperlessUnavailable
+from .invoiceninja import InvoiceNinjaUnavailable
 # `remind` (and its `requests` dependency) is imported lazily inside the functions
 # that send notifications, matching billwatch.main, so the pure selection logic
 # stays importable without the HTTP stack.
@@ -417,20 +418,43 @@ def _ninja_client():
 # Loop
 # ---------------------------------------------------------------------------
 
+# Tracks whether the backing services are currently unreachable, so a DNS/connect
+# blip is logged once when it starts and once when it clears — not as a full
+# traceback every POLL_INTERVAL seconds for the whole outage.
+_unreachable = False
+
+
+def _run_step(name: str, fn, *args) -> bool:
+    """Run one cycle step, routing failures by kind. Returns True on success.
+
+    Transient connectivity errors (Paperless/Invoice Ninja unreachable — e.g. a
+    `.lan` name that briefly fails to resolve) get a single concise WARNING on the
+    way down and an INFO on recovery, throttled via `_unreachable`. Everything else
+    is an unexpected bug and still gets a full traceback every sweep.
+    """
+    global _unreachable
+    try:
+        fn(*args)
+    except (PaperlessUnavailable, InvoiceNinjaUnavailable) as e:
+        if not _unreachable:
+            _unreachable = True
+            log.warning("%s: service unreachable (%s). Will retry each sweep; "
+                        "silencing repeats until it recovers.", name, e)
+        return False
+    except Exception as e:
+        log.exception("%s error: %s", name, e)
+        return False
+    if _unreachable:
+        _unreachable = False
+        log.info("Backing services reachable again; sweeps resumed.")
+    return True
+
+
 def cycle(client: PaperlessClient, ninja=None) -> None:
-    try:
-        fill_due_dates(client)
-    except Exception as e:
-        log.exception("fill_due_dates error: %s", e)
-    try:
-        run_reminders(client)
-    except Exception as e:
-        log.exception("reminder error: %s", e)
+    _run_step("fill_due_dates", fill_due_dates, client)
+    _run_step("reminder", run_reminders, client)
     if ninja is not None:
-        try:
-            sync_invoice_ninja(client, ninja)
-        except Exception as e:
-            log.exception("invoice ninja sync error: %s", e)
+        _run_step("invoice ninja sync", sync_invoice_ninja, client, ninja)
 
 
 def main() -> None:
