@@ -364,7 +364,21 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
                          "fields in Paperless to import it)", doc.id)
                 continue
             currency, amount, _rate = fields
-            vendor = doc.correspondent or doc.title or "Unknown vendor"
+            # Vendor MUST be the Paperless correspondent, never the email subject
+            # (doc.title): the subject varies per invoice, so falling back to it
+            # spawns a new vendor for every bill. If Paperless hasn't assigned a
+            # correspondent yet, defer the import — set it in Paperless and the
+            # next sweep picks it up.
+            vendor = doc.correspondent
+            if not vendor:
+                # No correspondent -> flag for review so it surfaces in Paperless
+                # instead of silently sitting un-imported. Set the correspondent and
+                # clear the tag; the next sweep then creates the expense.
+                client.add_tag(doc, "review_tag")
+                log.info("IN: doc %s has no correspondent — flagged Needs-review; set "
+                         "the correspondent in Paperless to import it as the vendor",
+                         doc.id)
+                continue
             invoice_no = parse_invoice_no(doc.content) or ""
             exp_date = doc.created or date.today()
             notes = (f"Imported by BillWatch\nInvoice: {invoice_no}\n"
@@ -399,6 +413,18 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
         # fields — this applies the currency and any later corrections you make.
         if pushed:
             fields = _doc_money_fields(client, doc, base)
+            currency = fields[0] if fields else None
+            # Keep the expense's vendor pointed at the current Paperless
+            # correspondent, so fixing it there follows through to IN. Skipped
+            # while there's no correspondent — never revert to a subject-vendor.
+            if doc.correspondent:
+                try:
+                    vid = ninja.find_or_create_vendor(doc.correspondent, currency=currency)
+                    if ninja.set_expense_vendor(doc.ninja_id, vid):
+                        log.info("IN: re-pointed expense %s -> vendor %s (doc %s)",
+                                 doc.ninja_id, doc.correspondent, doc.id)
+                except InvoiceNinjaError as e:
+                    log.warning("IN: vendor sync failed for doc %s: %s", doc.id, e)
             if fields:
                 currency, amount, rate = fields
                 try:

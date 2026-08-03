@@ -145,6 +145,132 @@ def _check_run_step() -> int:
     return ok
 
 
+# --- vendor sync ---------------------------------------------------------------
+# The vendor pushed to Invoice Ninja must be the Paperless correspondent, never the
+# email subject (doc.title) — and editing it in Paperless must follow through to IN.
+class _FakeNinjaClient:
+    """Records vendor/expense calls; vendor ids are stable per name so we can assert
+    which name won and whether an expense got re-pointed."""
+    def __init__(self):
+        self.vendor_ids = {}          # name -> id
+        self.expense_vendor = {}      # expense_id -> vendor_id
+        self.created = []             # (vendor_id, amount)
+        self.repointed = []           # (expense_id, vendor_id)
+
+    def find_or_create_vendor(self, name, currency=None):
+        return self.vendor_ids.setdefault(name, f"v-{name}")
+
+    def create_expense(self, *, vendor_id, amount, date, public_notes="", private_notes=""):
+        eid = f"e-{len(self.created) + 1}"
+        self.created.append((vendor_id, amount))
+        self.expense_vendor[eid] = vendor_id
+        return eid
+
+    def attach_document(self, *a, **k):
+        pass
+
+    def set_expense_vendor(self, expense_id, vendor_id):
+        if str(self.expense_vendor.get(expense_id) or "") == str(vendor_id):
+            return False
+        self.expense_vendor[expense_id] = vendor_id
+        self.repointed.append((expense_id, vendor_id))
+        return True
+
+    def reconcile_expense(self, *a, **k):
+        return False
+
+    def is_expense_paid(self, expense_id):
+        return False
+
+    def mark_expense_paid(self, *a, **k):
+        pass
+
+
+class _FakeClient:
+    def __init__(self, docs):
+        self._docs = docs
+        self.ninja_ids = {}           # doc id -> value set via set_ninja_id
+        self.tagged = []              # (doc id, tag key) added via add_tag
+
+    def invoices(self):
+        return self._docs
+
+    def has_tag(self, doc, key):
+        return (doc.id, key) in self.tagged
+
+    def add_tag(self, doc, key):
+        if (doc.id, key) not in self.tagged:
+            self.tagged.append((doc.id, key))
+
+    def set_ninja_id(self, doc, value):
+        self.ninja_ids[doc.id] = value
+        doc.ninja_id = value
+
+    def document_url(self, doc_id):
+        return f"https://p/documents/{doc_id}/"
+
+    def download(self, doc_id):
+        return b"%PDF-"
+
+    def set_currency(self, *a, **k):
+        pass
+
+    def set_amount(self, *a, **k):
+        pass
+
+    def set_rate(self, *a, **k):
+        pass
+
+
+def _paid_doc(doc_id, correspondent, *, ninja_id=None, title="Weird email subject"):
+    # currency == base (EUR) so _doc_money_fields needs no FX lookup or writes.
+    return PaperlessDoc(id=doc_id, title=title, created=date(2026, 7, 1), content="",
+                        due=date(2026, 8, 1), correspondent=correspondent,
+                        ninja_id=ninja_id, currency_raw="EUR", amount_raw="100.00")
+
+
+def _check_vendor_sync() -> int:
+    from billwatch.companion import sync_invoice_ninja
+    ok = 0
+    prev_base = _comp.config.INVOICE_NINJA_BASE_CURRENCY
+    _comp.config.INVOICE_NINJA_BASE_CURRENCY = "EUR"
+    try:
+        # 1. No correspondent yet -> defer: nothing created, no ninja id stored.
+        doc = _paid_doc(1, None, title="Invoice from someone")
+        client, ninja = _FakeClient([doc]), _FakeNinjaClient()
+        sync_invoice_ninja(client, ninja)
+        good = (not ninja.created and 1 not in client.ninja_ids
+                and (1, "review_tag") in client.tagged)
+        ok += good
+        print(f"[{'PASS' if good else 'FAIL'}] no correspondent -> deferred + "
+              f"flagged review (created={len(ninja.created)}, tagged={client.tagged})")
+
+        # 2. Correspondent present -> vendor is the correspondent, NOT the subject.
+        doc = _paid_doc(2, "Acme Studio", title="Re: your bill #42")
+        client, ninja = _FakeClient([doc]), _FakeNinjaClient()
+        sync_invoice_ninja(client, ninja)
+        good = ninja.created and ninja.created[0][0] == "v-Acme Studio"
+        ok += good
+        got = ninja.created[0][0] if ninja.created else "<none>"
+        print(f"[{'PASS' if good else 'FAIL'}] uses correspondent as vendor -> {got}")
+
+        # 3. Already pushed, correspondent edited in Paperless -> expense re-pointed.
+        doc = _paid_doc(3, "Corrected Vendor", ninja_id="e-1")
+        client, ninja = _FakeClient([doc]), _FakeNinjaClient()
+        ninja.expense_vendor["e-1"] = "v-Old Subject Vendor"  # the buggy original
+        sync_invoice_ninja(client, ninja)
+        good = ninja.repointed == [("e-1", "v-Corrected Vendor")]
+        ok += good
+        print(f"[{'PASS' if good else 'FAIL'}] edit in Paperless re-points vendor -> "
+              f"{ninja.repointed}")
+    finally:
+        _comp.config.INVOICE_NINJA_BASE_CURRENCY = prev_base
+    return ok
+
+
+_VENDOR_SYNC_CASES = 3  # keep in sync with _check_vendor_sync
+
+
 def run() -> bool:
     print("== document_url ==")
     u = _check_urls()
@@ -152,8 +278,10 @@ def run() -> bool:
     s = _check_selection()
     print("\n== _run_step throttling ==")
     rs = _check_run_step()
-    total = len(_URL_CASES) + len(_SEL_CASES) + _RUN_STEP_CASES
-    passed = u + s + rs
+    print("\n== vendor sync ==")
+    vs = _check_vendor_sync()
+    total = len(_URL_CASES) + len(_SEL_CASES) + _RUN_STEP_CASES + _VENDOR_SYNC_CASES
+    passed = u + s + rs + vs
     print(f"\n{passed}/{total} passed")
     return passed == total
 

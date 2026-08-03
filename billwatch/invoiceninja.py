@@ -155,6 +155,17 @@ class InvoiceNinjaClient:
         self._req("PUT", f"expenses/{expense_id}", json=want)
         return True
 
+    def set_expense_vendor(self, expense_id: str, vendor_id: str) -> bool:
+        """Point the expense at `vendor_id`. Returns True if it changed anything —
+        lets the caller keep the expense's vendor in sync with the Paperless
+        correspondent (fix it there, it follows here). Reads first so a no-op sweep
+        doesn't churn IN."""
+        exp = self.get_expense(expense_id)
+        if str(exp.get("vendor_id") or "") == str(vendor_id):
+            return False
+        self._req("PUT", f"expenses/{expense_id}", json={"vendor_id": str(vendor_id)})
+        return True
+
     def get_expense(self, expense_id: str) -> dict:
         return self._req("GET", f"expenses/{expense_id}").get("data", {})
 
