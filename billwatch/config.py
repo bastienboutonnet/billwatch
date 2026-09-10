@@ -85,6 +85,12 @@ PAPERLESS_INVOICE_DOC_TYPE = os.environ.get("PAPERLESS_INVOICE_DOC_TYPE", "Invoi
 PAPERLESS_DUE_FIELD = os.environ.get("PAPERLESS_DUE_FIELD", "Due date")  # date custom field
 PAPERLESS_PAID_TAG = os.environ.get("PAPERLESS_PAID_TAG", "Paid")
 PAPERLESS_REVIEW_TAG = os.environ.get("PAPERLESS_REVIEW_TAG", "Needs review")
+# Escape hatch: any invoice carrying this tag is ignored by BillWatch entirely —
+# no due-date fill, no reminders, no Invoice Ninja sync, and no Needs-review
+# flagging. Use it for duplicates (a receipt consumed alongside its invoice) or a
+# bill you never want imported. Unlike the other names, it may be absent from
+# Paperless: the feature then just stays off. Blank disables it.
+PAPERLESS_SKIP_TAG = os.environ.get("PAPERLESS_SKIP_TAG", "Skip")
 # Optional date custom field for durable same-day reminder dedupe across restarts.
 # Leave blank to dedupe in-process only (fine for a once-daily run).
 PAPERLESS_LAST_REMINDED_FIELD = os.environ.get("PAPERLESS_LAST_REMINDED_FIELD", "")

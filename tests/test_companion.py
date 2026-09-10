@@ -3,6 +3,7 @@ fire a reminder on a given day. No live Paperless instance — plain doc objects
 """
 from datetime import date
 import logging
+import re
 import sys, os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -271,6 +272,121 @@ def _check_vendor_sync() -> int:
 _VENDOR_SYNC_CASES = 3  # keep in sync with _check_vendor_sync
 
 
+# --- Paperless client: skip tag + correspondent cache --------------------------
+# Both are exercised against a stubbed `requests` module, since the real HTTP stack
+# isn't a test dependency (same lazy-import contract as extract.py).
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+class _FakeSession:
+    """Serves canned Paperless API rows and records which URLs were hit."""
+    def __init__(self, docs, correspondents, tags):
+        self.docs = docs
+        self.correspondents = correspondents
+        self.tags = tags
+        self.headers = {}
+        self.calls = []
+
+    def get(self, url, params=None, timeout=None):
+        self.calls.append(url)
+        if "/documents/" in url:
+            rows = self.docs
+        elif re.search(r"/correspondents/\d+/$", url):
+            cid = int(url.rstrip("/").rsplit("/", 1)[1])
+            return _FakeResponse(
+                {"id": cid, "name": self.correspondents.get(cid, {}).get("name")})
+        elif "/correspondents" in url:
+            rows = [{"id": k, **v} for k, v in self.correspondents.items()
+                    if v.get("listed", True)]
+        elif "/tags" in url:
+            rows = self.tags
+        elif "/document_types" in url:
+            rows = [{"id": 1, "name": "Invoice"}]
+        elif "/custom_fields" in url:
+            rows = [{"id": 10, "name": "Due date"}]
+        else:
+            rows = []
+        return _FakeResponse({"results": rows, "next": None})
+
+
+def _install_fake_requests():
+    """Minimal stand-in so paperless.py's lazy `import requests` resolves."""
+    import types
+    mod = types.ModuleType("requests")
+
+    class RequestException(Exception):
+        pass
+
+    mod.RequestException = RequestException
+    mod.ConnectionError = type("ConnectionError", (RequestException,), {})
+    mod.Timeout = type("Timeout", (RequestException,), {})
+    mod.Session = lambda: None
+    sys.modules.setdefault("requests", mod)
+
+
+def _make_client(session):
+    from billwatch.paperless import PaperlessClient
+    _install_fake_requests()
+    return PaperlessClient(
+        "http://paperless.test", "token",
+        invoice_doc_type="Invoice", due_field="Due date",
+        paid_tag="Paid", review_tag="Needs review", skip_tag="Skip",
+        session=session,
+    )
+
+
+_TAGS = [{"id": 100, "name": "Paid"}, {"id": 101, "name": "Needs review"},
+         {"id": 102, "name": "Skip"}]
+
+
+def _check_paperless_client() -> int:
+    ok = 0
+    rows = [
+        {"id": 1, "title": "Keep me", "created": "2026-07-01", "content": "", "tags": []},
+        {"id": 2, "title": "Skip me", "created": "2026-07-01", "content": "", "tags": [102]},
+    ]
+
+    # 1. Skip-tagged invoices never reach any caller.
+    client = _make_client(_FakeSession(rows, {}, _TAGS))
+    got = [d.id for d in client.invoices()]
+    good = got == [1]
+    ok += good
+    print(f"[{'PASS' if good else 'FAIL'}] skip tag filters the document -> ids {got}")
+
+    # 2. Skip tag absent from Paperless -> feature off, nothing blows up.
+    client = _make_client(_FakeSession(rows, {}, _TAGS[:2]))
+    got = [d.id for d in client.invoices()]
+    good = got == [1, 2]
+    ok += good
+    print(f"[{'PASS' if good else 'FAIL'}] missing skip tag disables filtering -> ids {got}")
+
+    # 3. A correspondent created AFTER the name cache was built must still resolve;
+    #    otherwise the doc looks vendor-less forever and gets re-flagged every sweep.
+    late = {7: {"name": "Early Vendor"}, 9: {"name": "Late Vendor", "listed": False}}
+    doc_rows = [{"id": 1, "title": "x", "created": "2026-07-01", "content": "",
+                 "tags": [], "correspondent": 9}]
+    session = _FakeSession(doc_rows, late, _TAGS)
+    client = _make_client(session)
+    name = client.invoices()[0].correspondent
+    refetched = any(re.search(r"/correspondents/9/$", u) for u in session.calls)
+    good = name == "Late Vendor" and refetched
+    ok += good
+    print(f"[{'PASS' if good else 'FAIL'}] correspondent added after cache -> {name!r} "
+          f"(refetched={refetched})")
+    return ok
+
+
+_CLIENT_CASES = 3  # keep in sync with _check_paperless_client
+
+
 def run() -> bool:
     print("== document_url ==")
     u = _check_urls()
@@ -280,8 +396,11 @@ def run() -> bool:
     rs = _check_run_step()
     print("\n== vendor sync ==")
     vs = _check_vendor_sync()
-    total = len(_URL_CASES) + len(_SEL_CASES) + _RUN_STEP_CASES + _VENDOR_SYNC_CASES
-    passed = u + s + rs + vs
+    print("\n== paperless client ==")
+    pc = _check_paperless_client()
+    total = (len(_URL_CASES) + len(_SEL_CASES) + _RUN_STEP_CASES
+             + _VENDOR_SYNC_CASES + _CLIENT_CASES)
+    passed = u + s + rs + vs + pc
     print(f"\n{passed}/{total} passed")
     return passed == total
 

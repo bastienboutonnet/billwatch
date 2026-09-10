@@ -85,6 +85,7 @@ def _client() -> PaperlessClient:
         due_field=config.PAPERLESS_DUE_FIELD,
         paid_tag=config.PAPERLESS_PAID_TAG,
         review_tag=config.PAPERLESS_REVIEW_TAG,
+        skip_tag=config.PAPERLESS_SKIP_TAG,
         last_reminded_field=config.PAPERLESS_LAST_REMINDED_FIELD,
         # Only require these fields to exist when the IN sync is on.
         ninja_id_field=(config.PAPERLESS_NINJA_ID_FIELD
@@ -376,8 +377,9 @@ def sync_invoice_ninja(client: PaperlessClient, ninja) -> None:
                 # clear the tag; the next sweep then creates the expense.
                 client.add_tag(doc, "review_tag")
                 log.info("IN: doc %s has no correspondent — flagged Needs-review; set "
-                         "the correspondent in Paperless to import it as the vendor",
-                         doc.id)
+                         "the correspondent in Paperless to import it as the vendor, "
+                         "or add the '%s' tag to leave this document alone",
+                         doc.id, config.PAPERLESS_SKIP_TAG)
                 continue
             invoice_no = parse_invoice_no(doc.content) or ""
             exp_date = doc.created or date.today()

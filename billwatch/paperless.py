@@ -82,6 +82,7 @@ class PaperlessClient:
         due_field: str,
         paid_tag: str,
         review_tag: str,
+        skip_tag: str = "",
         last_reminded_field: str = "",
         ninja_id_field: str = "",
         amount_field: str = "",
@@ -106,6 +107,7 @@ class PaperlessClient:
             "due_field": due_field,
             "paid_tag": paid_tag,
             "review_tag": review_tag,
+            "skip_tag": skip_tag,
             "last_reminded_field": last_reminded_field,
             "ninja_id_field": ninja_id_field,
             "amount_field": amount_field,
@@ -165,6 +167,20 @@ class PaperlessClient:
                 return row["id"]
         raise PaperlessError(f"Paperless {endpoint} named {name!r} not found; create it first.")
 
+    def _optional_id(self, endpoint: str, name: str) -> Optional[int]:
+        """Like _lookup_id, but a missing name turns the feature off instead of
+        aborting every sweep. Used for the skip tag, which ships with a default
+        name that a given Paperless install may simply not have."""
+        if not name:
+            return None
+        try:
+            return self._lookup_id(endpoint, name)
+        except PaperlessUnavailable:
+            raise  # a blip must not silently disable the feature for the process
+        except PaperlessError as e:
+            log.info("Optional %s %r not found — feature disabled (%s)", endpoint, name, e)
+            return None
+
     def _resolve(self) -> None:
         if self._ids:
             return
@@ -173,6 +189,7 @@ class PaperlessClient:
             "due_field": self._lookup_id("custom_fields/", self._names["due_field"]),
             "paid_tag": self._lookup_id("tags/", self._names["paid_tag"]),
             "review_tag": self._lookup_id("tags/", self._names["review_tag"]),
+            "skip_tag": self._optional_id("tags/", self._names["skip_tag"]),
             "last_reminded_field": (
                 self._lookup_id("custom_fields/", self._names["last_reminded_field"])
                 if self._names["last_reminded_field"] else None
@@ -207,7 +224,20 @@ class PaperlessClient:
             self._correspondents = {
                 r["id"]: r.get("name") for r in self._paginate("correspondents/", {})
             }
-        return self._correspondents.get(cid)
+        name = self._correspondents.get(cid)
+        if name is None:
+            # Cache miss: the correspondent was created in Paperless *after* this
+            # long-lived process cached the list. Without this refetch the document
+            # looks correspondent-less forever, so the IN sync re-flags it
+            # Needs-review every sweep no matter how often the tag is cleared.
+            try:
+                name = self._get(f"correspondents/{cid}/").get("name")
+            except PaperlessError as e:
+                log.warning("correspondent %s lookup failed: %s", cid, e)
+                return None
+            if name:
+                self._correspondents[cid] = name
+        return name
 
     # --- document parsing ----------------------------------------------------
     def _to_doc(self, row: dict) -> PaperlessDoc:
@@ -253,6 +283,9 @@ class PaperlessClient:
     def invoices(self, *, exclude_paid: bool = False) -> list[PaperlessDoc]:
         """All documents of the invoice type, newest first.
 
+        Documents carrying the skip tag are dropped here, so every caller — due
+        dates, reminders, Invoice Ninja — ignores them without repeating the check.
+
         Filtering the due-date/paid state is done in Python by the caller so we
         don't depend on server-version quirks in `custom_field_query`. Fine for
         personal invoice volumes (tens of documents).
@@ -262,7 +295,11 @@ class PaperlessClient:
             paid = self._id("paid_tag")
             if paid is not None:
                 params["tags__id__none"] = paid
-        return [self._to_doc(r) for r in self._paginate("documents/", params)]
+        skip = self._id("skip_tag")
+        docs = [self._to_doc(r) for r in self._paginate("documents/", params)]
+        if skip is None:
+            return docs
+        return [d for d in docs if skip not in d.tag_ids]
 
     def invoices_missing_due(self) -> list[PaperlessDoc]:
         """Invoices that don't yet have the Due-date custom field populated."""
