@@ -14,6 +14,7 @@ once against the API.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
@@ -23,6 +24,9 @@ from typing import Optional
 # testable — without the HTTP stack installed. Same lazy pattern as extract.py.
 
 log = logging.getLogger("billwatch.paperless")
+
+# How often to re-check for a skip tag that didn't exist at startup.
+SKIP_RETRY_SECONDS = 600
 
 
 class PaperlessError(RuntimeError):
@@ -115,6 +119,7 @@ class PaperlessClient:
             "rate_field": rate_field,
         }
         self._ids: dict[str, Optional[int]] = {}
+        self._skip_checked = 0.0        # monotonic time of the last skip-tag lookup
         self._correspondents: Optional[dict[int, str]] = None  # id -> name cache
 
     # --- HTTP helpers --------------------------------------------------------
@@ -211,6 +216,7 @@ class PaperlessClient:
                 if self._names["rate_field"] else None
             ),
         }
+        self._skip_checked = time.monotonic()
         log.info("Resolved Paperless ids: %s", self._ids)
 
     def _id(self, key: str) -> Optional[int]:
@@ -279,6 +285,27 @@ class PaperlessClient:
             custom_fields=cfs,
         )
 
+    def _skip_tag_id(self) -> Optional[int]:
+        """Resolve the skip tag, re-checking periodically while it's absent.
+
+        It's the one name that's optional, so it's usually created in the
+        Paperless UI *after* the companion is already running. Latching the first
+        miss forever would mean restarting the container just to start honouring
+        the tag; instead a missing tag is re-looked-up every SKIP_RETRY_SECONDS.
+        """
+        tag_id = self._id("skip_tag")
+        if tag_id is not None or not self._names["skip_tag"]:
+            return tag_id
+        if time.monotonic() - self._skip_checked < SKIP_RETRY_SECONDS:
+            return None
+        self._skip_checked = time.monotonic()
+        tag_id = self._optional_id("tags/", self._names["skip_tag"])
+        self._ids["skip_tag"] = tag_id
+        if tag_id is not None:
+            log.info("Skip tag %r now exists — honouring it from this sweep on",
+                     self._names["skip_tag"])
+        return tag_id
+
     # --- queries -------------------------------------------------------------
     def invoices(self, *, exclude_paid: bool = False) -> list[PaperlessDoc]:
         """All documents of the invoice type, newest first.
@@ -295,7 +322,7 @@ class PaperlessClient:
             paid = self._id("paid_tag")
             if paid is not None:
                 params["tags__id__none"] = paid
-        skip = self._id("skip_tag")
+        skip = self._skip_tag_id()
         docs = [self._to_doc(r) for r in self._paginate("documents/", params)]
         if skip is None:
             return docs

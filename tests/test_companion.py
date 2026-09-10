@@ -381,10 +381,26 @@ def _check_paperless_client() -> int:
     ok += good
     print(f"[{'PASS' if good else 'FAIL'}] correspondent added after cache -> {name!r} "
           f"(refetched={refetched})")
+    # 4. A skip tag created in Paperless *after* startup is picked up on a later
+    #    sweep, so honouring it never needs a container restart.
+    import billwatch.paperless as _pl
+    session = _FakeSession(rows, {}, _TAGS[:2])
+    client = _make_client(session)
+    client.invoices()                     # first sweep: tag absent, feature off
+    session.tags = list(_TAGS)            # user creates it in the UI
+    prev_retry = _pl.SKIP_RETRY_SECONDS
+    _pl.SKIP_RETRY_SECONDS = 0
+    try:
+        got = [d.id for d in client.invoices()]
+    finally:
+        _pl.SKIP_RETRY_SECONDS = prev_retry
+    good = got == [1]
+    ok += good
+    print(f"[{'PASS' if good else 'FAIL'}] skip tag created later is picked up -> ids {got}")
     return ok
 
 
-_CLIENT_CASES = 3  # keep in sync with _check_paperless_client
+_CLIENT_CASES = 4  # keep in sync with _check_paperless_client
 
 
 def run() -> bool:

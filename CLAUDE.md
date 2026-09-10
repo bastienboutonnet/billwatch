@@ -13,7 +13,7 @@ Docker on a home server. Outbound-only: IMAP + CalDAV to iCloud, HTTP to ntfy.
   ntfy topic, etc. Load with `set -a; source .env; set +a`.
 - Run (standalone, iCloud IMAP): `python -m billwatch.main`
 - Run (Paperless companion): `python -m billwatch.companion` (needs `PAPERLESS_*`)
-- Tests: `python tests/test_extract.py` (7/7), `tests/test_companion.py` (23/23),
+- Tests: `python tests/test_extract.py` (7/7), `tests/test_companion.py` (24/24),
   `tests/test_ninja.py` (16/16: amount parsing + sync decision). None need
   `requests` installed — the HTTP deps are imported lazily, same as `extract.py`.
 - Docker: `docker compose up -d --build` (state persists in `./data`)
